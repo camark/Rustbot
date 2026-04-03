@@ -20,7 +20,9 @@
       "Bash(curl -s \"https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/api-use.html\")",
       "Bash(curl -s \"https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/event-emit.html\")",
       "Bash(curl:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
     ]
   }
 }

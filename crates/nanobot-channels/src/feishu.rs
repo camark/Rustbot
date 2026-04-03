@@ -203,17 +203,32 @@ impl FeishuConnector {
                             Some(outbound) => {
                                 info!("Feishu outbound: received message for chat_id={}, content_len={}",
                                     outbound.chat_id, outbound.content.len());
+                                debug!("Feishu outbound content: {}", outbound.content);
 
                                 let content = json!({
                                     "text": outbound.content,
                                 })
                                 .to_string();
 
+                                // Determine receive_id_type based on chat_id format
+                                // open_id format: ou_xxxxxx (for private messages)
+                                // chat_id format: oc_xxxxxx (for group chats)
+                                let (receive_id_type, receive_id) = if outbound.chat_id.starts_with("ou_") {
+                                    ("open_id", outbound.chat_id.clone())
+                                } else if outbound.chat_id.starts_with("oc_") {
+                                    ("chat_id", outbound.chat_id.clone())
+                                } else {
+                                    // Default to open_id for backwards compatibility
+                                    ("open_id", outbound.chat_id.clone())
+                                };
+
+                                info!("Feishu outbound: using receive_id_type={}, receive_id={}", receive_id_type, receive_id);
+
                                 let request = CreateMessageRequest::builder()
-                                    .receive_id_type("chat_id")
+                                    .receive_id_type(receive_id_type)
                                     .request_body(
                                         CreateMessageRequestBody::builder()
-                                            .receive_id(&outbound.chat_id)
+                                            .receive_id(&receive_id)
                                             .msg_type("text")
                                             .content(&content)
                                             .build(),
@@ -227,8 +242,8 @@ impl FeishuConnector {
                                     .create(request, None)
                                     .await
                                 {
-                                    Ok(_) => {
-                                        info!("Feishu outbound: message sent to {}", outbound.chat_id);
+                                    Ok(response) => {
+                                        info!("Feishu outbound: message sent to {} (message_id: {})", receive_id, response.message_id);
                                     }
                                     Err(e) => {
                                         error!("Feishu outbound: failed to send message: {}", e);
@@ -287,15 +302,17 @@ impl FeishuConnector {
 
                         info!("Feishu: message content='{}'", text);
 
-                        // Convert to InboundMessage
+                        // For private messages (p2_im_message_receive_v1), we need to use open_id for sending replies
+                        // chat_id is used for group chats, open_id for 1-on-1 messages
+                        // We'll store the open_id in the InboundMessage sender_id field and use it for replies
                         let inbound = InboundMessage::new(
                             "feishu",
-                            sender_open_id,
-                            chat_id.clone(),
+                            sender_open_id.clone(), // Store open_id as sender_id for reply routing
+                            sender_open_id.clone(), // Use open_id as chat_id for private messages
                             text.to_string(),
                         );
 
-                        info!("Feishu: publishing inbound to bus for chat_id={}", chat_id);
+                        info!("Feishu: publishing inbound to bus for chat_id={}, sender={}", inbound.chat_id, inbound.sender_id);
 
                         // Spawn async task to publish - this is necessary because the event handler is sync
                         tokio::spawn(async move {
