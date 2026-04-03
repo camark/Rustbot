@@ -4,7 +4,7 @@ use crate::base::{ChannelConnector, ChannelStatus};
 use crate::auth::AuthStorage;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use nanobot_bus::InboundMessage;
+use nanobot_bus::{InboundMessage, MessageBus};
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -119,7 +119,7 @@ impl FeishuConnector {
         let url = "https://open.feishu.cn/open-apis/im/v1/messages";
 
         let response = client
-            .post(&url)
+            .post(url)
             .header("Authorization", format!("Bearer {}", token))
             .header("Content-Type", "application/json")
             .json(&json!({
