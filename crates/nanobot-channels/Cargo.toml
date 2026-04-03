@@ -1,0 +1,45 @@
+[package]
+name = "nanobot-channels"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+description = "Channel connectors for RustBot (Telegram, Discord, Feishu, etc.)"
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true, features = ["full"] }
+async-trait = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# HTTP client
+reqwest = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utilities
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+# Internal crates
+nanobot-bus = { workspace = true }
+nanobot-config = { workspace = true }
+
+# Channel-specific dependencies
+teloxide = { version = "0.12", features = ["macros"], optional = true }
+serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "rustls_backend", "builder"], optional = true }
+
+[features]
+default = ["telegram", "discord"]
+telegram = ["dep:teloxide"]
+discord = ["dep:serenity"]
+feishu = []
