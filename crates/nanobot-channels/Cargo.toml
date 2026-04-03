@@ -41,8 +41,13 @@ serenity = { version = "0.12", default-features = false, features = ["client", "
 # Feishu/OpenLark SDK for WebSocket long connection
 open-lark = { version = "0.14", features = ["websocket", "bot", "im"], optional = true }
 
+# QQ/OneBot WebSocket client
+tokio-tungstenite = { version = "0.21", optional = true }
+futures-util = { version = "0.3", optional = true }
+
 [features]
-default = ["telegram", "discord", "feishu"]
+default = ["telegram", "discord", "feishu", "qq"]
 telegram = ["dep:teloxide"]
 discord = ["dep:serenity"]
 feishu = ["dep:open-lark"]
+qq = ["dep:tokio-tungstenite", "dep:futures-util"]

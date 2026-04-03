@@ -1,7 +1,7 @@
 //! RustBot Channels
 //!
 //! This crate provides channel connectors for external messaging platforms
-//! including Telegram, Discord, Feishu, and more.
+//! including Telegram, Discord, Feishu, QQ, and more.
 //!
 //! ## Features
 //!
@@ -24,6 +24,9 @@ mod discord;
 #[cfg(feature = "feishu")]
 pub mod feishu;
 
+#[cfg(feature = "qq")]
+pub mod qq;
+
 pub use auth::*;
 pub use base::*;
 pub use manager::*;
@@ -37,3 +40,6 @@ pub use discord::DiscordConnector;
 
 #[cfg(feature = "feishu")]
 pub use feishu::FeishuConnector;
+
+#[cfg(feature = "qq")]
+pub use qq::QQConnector;

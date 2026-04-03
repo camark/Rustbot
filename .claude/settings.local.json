@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//d C:/git/**)",
+      "Bash(cargo build:*)",
+      "Bash(cargo run:*)",
+      "Bash(taskkill /F /IM rustbot.exe)",
+      "Bash(powershell:*)",
+      "Bash(cargo test:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "Bash(curl -s https://raw.githubusercontent.com/4t145/qqbot-sdk/master/README.md)",
+      "Bash(curl -s https://raw.githubusercontent.com/YinMo19/botrs/main/README.md)",
+      "WebFetch(domain:lib.rs)",
+      "Bash(curl -s https://crates.io/api/v1/crates?q=qqbot)",
+      "Bash(curl -s https://crates.io/api/v1/crates?q=onebot)",
+      "Bash(curl -s https://crates.io/api/v1/crates/onebot-api/1.2.1)",
+      "WebFetch(domain:bot.q.qq.com)",
+      "Bash(curl -s \"https://bot.q.qq.com/wiki/develop/api-v2/\")",
+      "Bash(curl -s \"https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/api-use.html\")",
+      "Bash(curl -s \"https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/event-emit.html\")",
+      "Bash(curl:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}

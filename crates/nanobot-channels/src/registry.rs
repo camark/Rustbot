@@ -106,6 +106,15 @@ pub fn create_default_registry() -> Arc<ChannelRegistry> {
         });
     }
 
+    #[cfg(feature = "qq")]
+    {
+        let connector = Arc::new(crate::qq::QQConnector::new());
+        let registry_clone = registry.clone();
+        tokio::spawn(async move {
+            registry_clone.register(connector).await;
+        });
+    }
+
     // Give spawned tasks time to complete registration
     // This is a workaround for the async registration issue
     std::thread::sleep(std::time::Duration::from_millis(100));

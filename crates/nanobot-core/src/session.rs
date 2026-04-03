@@ -3,7 +3,8 @@
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::{fs, io};
+use std::{fs, io, sync::Arc};
+use tokio::sync::RwLock;
 
 /// Session configuration
 #[derive(Debug, Clone)]
@@ -116,7 +117,7 @@ impl Session {
 /// Session manager
 pub struct SessionManager {
     workspace_dir: PathBuf,
-    sessions: parking_lot::Mutex<HashMap<String, Session>>,
+    sessions: Arc<RwLock<HashMap<String, Session>>>,
 }
 
 use std::collections::HashMap;
@@ -132,19 +133,19 @@ impl SessionManager {
 
         Ok(Self {
             workspace_dir,
-            sessions: parking_lot::Mutex::new(HashMap::new()),
+            sessions: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
     /// Get or create a session
-    pub fn get_or_create(&self, key: impl Into<String>) -> SessionHandle {
+    pub async fn get_or_create(&self, key: impl Into<String>) -> SessionHandle {
         let key = key.into();
 
         // Try to get from cache
         {
-            let sessions = self.sessions.lock();
+            let sessions = self.sessions.read().await;
             if let Some(session) = sessions.get(&key) {
-                let mut session = session.clone();
+                let session = session.clone();
                 return SessionHandle::new(session, self.clone(), key);
             }
         }
@@ -152,7 +153,7 @@ impl SessionManager {
         // Try to load from disk
         if let Some(session) = self.load_session(&key) {
             {
-                let mut sessions = self.sessions.lock();
+                let mut sessions = self.sessions.write().await;
                 sessions.insert(key.clone(), session.clone());
             } // Lock dropped here
             return SessionHandle::new(session, self.clone(), key);
@@ -167,7 +168,7 @@ impl SessionManager {
         let session = Session::new(&key, channel, chat_id);
 
         {
-            let mut sessions = self.sessions.lock();
+            let mut sessions = self.sessions.write().await;
             sessions.insert(key.clone(), session.clone());
         }
 
@@ -197,13 +198,13 @@ impl SessionManager {
     }
 
     /// Get all session keys
-    pub fn list_sessions(&self) -> Vec<String> {
-        self.sessions.lock().keys().cloned().collect()
+    pub async fn list_sessions(&self) -> Vec<String> {
+        self.sessions.read().await.keys().cloned().collect()
     }
 
     /// Remove a session
-    pub fn remove(&self, key: &str) -> Option<Session> {
-        let mut sessions = self.sessions.lock();
+    pub async fn remove(&self, key: &str) -> Option<Session> {
+        let mut sessions = self.sessions.write().await;
         let session = sessions.remove(key);
 
         // Also remove from disk
@@ -218,12 +219,12 @@ impl SessionManager {
     }
 
     /// Clean up expired sessions (older than max_age_days)
-    pub fn cleanup_expired(&self, max_age_days: u32) -> io::Result<usize> {
+    pub async fn cleanup_expired(&self, max_age_days: u32) -> io::Result<usize> {
         let cutoff = Utc::now() - Duration::days(max_age_days as i64);
         let mut removed_count = 0;
 
         let sessions_to_remove: Vec<String> = {
-            let sessions = self.sessions.lock();
+            let sessions = self.sessions.read().await;
             sessions
                 .iter()
                 .filter(|(_, s)| s.updated_at < cutoff)
@@ -232,7 +233,7 @@ impl SessionManager {
         };
 
         for key in sessions_to_remove {
-            self.remove(&key);
+            self.remove(&key).await;
             removed_count += 1;
         }
 
@@ -260,15 +261,15 @@ impl SessionManager {
     }
 
     /// Consolidate old sessions by generating summaries
-    pub fn consolidate_old_sessions(
-        &self,
-        threshold: usize,
-        summary_generator: &dyn Fn(&Session) -> Option<String>,
-    ) -> usize {
+    pub async fn consolidate_old_sessions<F>(&self, threshold: usize, summary_generator: F) -> usize
+    where
+        F: Fn(&Session) -> Option<String> + Send + Sync,
+    {
         let mut consolidated_count = 0;
 
+        // First, get the list of sessions to consolidate (without holding the lock across await)
         let sessions_to_consolidate: Vec<String> = {
-            let sessions = self.sessions.lock();
+            let sessions = self.sessions.read().await;
             sessions
                 .iter()
                 .filter(|(_, s)| s.messages.len() > threshold)
@@ -276,10 +277,13 @@ impl SessionManager {
                 .collect()
         };
 
+        // Now process each session
         for key in sessions_to_consolidate {
             if let Some(session) = self.load_session(&key) {
+                // Call the closure outside of any lock
                 if let Some(summary) = summary_generator(&session) {
-                    let mut sessions = self.sessions.lock();
+                    // Now acquire the write lock only for the update
+                    let mut sessions = self.sessions.write().await;
                     if let Some(s) = sessions.get_mut(&key) {
                         s.consolidate(summary);
                         let _ = self.save(s);
@@ -297,7 +301,7 @@ impl Clone for SessionManager {
     fn clone(&self) -> Self {
         Self {
             workspace_dir: self.workspace_dir.clone(),
-            sessions: parking_lot::Mutex::new(self.sessions.lock().clone()),
+            sessions: self.sessions.clone(),
         }
     }
 }

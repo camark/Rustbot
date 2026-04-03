@@ -134,7 +134,11 @@ impl AgentLoop {
             let msg = tokio::select! {
                 result = self.bus.as_ref().consume_inbound() => {
                     match result {
-                        Ok(msg) => msg,
+                        Ok(msg) => {
+                            info!("AgentLoop received inbound message: channel={}, sender={}, chat_id={}, content={}",
+                                msg.channel, msg.sender_id, msg.chat_id, msg.content);
+                            msg
+                        },
                         Err(_) => {
                             warn!("Error consuming inbound message");
                             continue;
@@ -188,11 +192,13 @@ impl AgentLoop {
 
     /// Dispatch a message for processing
     async fn dispatch(&self, msg: InboundMessage) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        debug!("Processing message from {}:{}", msg.channel, msg.sender_id);
+        let session_key = msg.session_key();
+        info!("Dispatch: starting for chat_id={}, session_key={}", msg.chat_id, session_key);
 
         // Get or create session
         let session_key = msg.session_key();
-        let mut session_handle = self.sessions.get_or_create(&session_key);
+        let mut session_handle = self.sessions.get_or_create(&session_key).await;
+        info!("Dispatch: got session handle for {}", session_key);
 
         // Build messages for LLM
         let history = session_handle.get_history(0);
@@ -211,7 +217,7 @@ impl AgentLoop {
         let (truncated, token_count) = memory_manager.truncate_messages(&messages_value);
         messages_value = truncated;
 
-        info!("Using {} messages ({} tokens) for LLM call", messages_value.len(), token_count);
+        info!("Dispatch: using {} messages ({} tokens) for LLM call", messages_value.len(), token_count);
 
         // Convert Value messages to Message structs
         let messages: Vec<Message> = messages_value
@@ -220,6 +226,8 @@ impl AgentLoop {
                 serde_json::from_value(v).ok()
             })
             .collect();
+
+        info!("Dispatch: calling LLM for chat_id={}", msg.chat_id);
 
         // Call LLM
         let request = nanobot_providers::ChatRequest {
@@ -236,12 +244,14 @@ impl AgentLoop {
         };
 
         let response = self.provider.chat_with_retry(request).await?;
+        info!("Dispatch: LLM response received for chat_id={}", msg.chat_id);
 
         // Handle response (may need further LLM calls if tool calls exist)
         let mut current_response = response;
 
         loop {
             // Handle the current response
+            info!("Dispatch: handling response for chat_id={}", msg.chat_id);
             self.handle_response(&msg, &mut session_handle, current_response).await?;
 
             // If there are tool calls, execute them and get another response
@@ -277,6 +287,7 @@ impl AgentLoop {
                 current_response = self.provider.chat_with_retry(request).await?;
             } else {
                 // No tool calls, we're done
+                info!("Dispatch: completed for chat_id={}", msg.chat_id);
                 break;
             }
         }
@@ -318,7 +329,12 @@ impl AgentLoop {
         if let Some(content) = &response.content {
             if !content.is_empty() {
                 let outbound = OutboundMessage::new(&msg.channel, &msg.chat_id, content);
-                self.bus.publish_outbound(outbound).await?;
+                info!("AgentLoop publishing outbound message: channel={}, chat_id={}, content_len={}",
+                    outbound.channel, outbound.chat_id, outbound.content.len());
+                match self.bus.publish_outbound(outbound).await {
+                    Ok(_) => info!("Successfully published outbound message"),
+                    Err(e) => error!("Failed to publish outbound message: {}", e),
+                }
             }
         }
 

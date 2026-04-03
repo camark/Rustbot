@@ -1420,6 +1420,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "futures-util",
  "nanobot-bus",
  "nanobot-config",
  "open-lark",
@@ -1430,6 +1431,7 @@ dependencies = [
  "teloxide",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite 0.21.0",
  "tracing",
  "uuid",
 ]

@@ -143,8 +143,7 @@ impl FeishuConnector {
         running: Arc<Mutex<bool>>,
         lark_client_store: Arc<RwLock<Option<Arc<LarkClient>>>>,
     ) {
-        // Use std::thread::spawn to avoid Send requirement on the event handler
-        // We create a new runtime inside the thread
+        // Use std::thread::spawn to create a dedicated thread for the WebSocket connection
         std::thread::spawn(move || {
             let app_id = &config.app_id;
             let app_secret = &config.app_secret;
@@ -156,8 +155,10 @@ impl FeishuConnector {
 
             info!("Starting Feishu WebSocket long connection (app_id: {})", app_id);
 
-            // Create a new runtime for this thread
-            let rt = tokio::runtime::Builder::new_current_thread()
+            // Create a multi-threaded runtime for this thread
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(3)
+                .thread_name("feishu-ws")
                 .enable_all()
                 .build()
                 .expect("Failed to create Tokio runtime");
@@ -171,82 +172,28 @@ impl FeishuConnector {
                         .build()
                 );
 
+                info!("Feishu Lark client created");
+
                 // Store client for sending messages
                 {
                     *lark_client_store.write().await = Some(lark_client.clone());
+                    info!("Feishu client stored for outbound messages");
                 }
 
-                // Create event handler with message processing
-                let bus_for_handler = bus.clone();
-                let event_handler = EventDispatcherHandler::builder()
-                    .register_p2_im_message_receive_v1(move |event| {
-                        let bus_clone = bus_for_handler.clone();
-
-                        tokio::spawn(async move {
-                            // Only handle text messages
-                            if event.event.message.message_type != "text" {
-                                debug!("Skipping non-text message type: {}", event.event.message.message_type);
-                                return;
-                            }
-
-                            // Get sender open_id - it's a String field
-                            let sender_open_id = event.event.sender.sender_id.open_id;
-
-                            // Get chat_id
-                            let chat_id = event.event.message.chat_id;
-
-                            // Parse message content
-                            let content: serde_json::Value = match serde_json::from_str(&event.event.message.content) {
-                                Ok(c) => c,
-                                Err(e) => {
-                                    error!("Failed to parse message content: {}", e);
-                                    return;
-                                }
-                            };
-
-                            let text = match content.get("text").and_then(|v| v.as_str()) {
-                                Some(t) if !t.is_empty() => t,
-                                _ => return,
-                            };
-
-                            // Convert to InboundMessage and send to bus
-                            let inbound = InboundMessage::new(
-                                "feishu",
-                                sender_open_id,
-                                chat_id,
-                                text.to_string(),
-                            );
-
-                            if let Err(e) = bus_clone.publish_inbound(inbound).await {
-                                error!("Failed to publish inbound message to bus: {}", e);
-                            }
-                        });
-                    })
-                    .expect("Failed to register message receive handler")
-                    .build();
-
-                // Get config for WebSocket client
-                let ws_config = Arc::new(lark_client.config.clone());
-
-                info!("Feishu WebSocket config: app_id={}, has_app_secret={}", ws_config.app_id, !ws_config.app_secret.is_empty());
-
-                // Start WebSocket connection using open-lark SDK
-                // This runs until the connection is closed or error occurs
-                info!("Feishu WebSocket calling LarkWsClient::open...");
-
-                // Spawn outbound message handler BEFORE connecting WebSocket
-                // This way it's ready to process outbound messages as soon as they arrive
+                // Clone bus for outbound handler
+                let outbound_bus = bus.clone();
                 let outbound_running = running.clone();
                 let outbound_lark_client = lark_client.clone();
-                let outbound_bus = bus.clone();
+
+                // Spawn outbound message handler
                 tokio::spawn(async move {
-                    info!("Starting Feishu outbound message handler");
+                    info!("Feishu outbound handler started");
                     loop {
                         // Check if we should stop
                         {
                             let guard = outbound_running.lock().await;
                             if !*guard {
-                                info!("Outbound handler stopping");
+                                info!("Feishu outbound handler stopping");
                                 break;
                             }
                         }
@@ -254,8 +201,9 @@ impl FeishuConnector {
                         // Try to get outbound message (non-blocking)
                         match outbound_bus.try_consume_outbound().await {
                             Some(outbound) => {
-                                debug!("Received outbound message for Feishu: {}", outbound.chat_id);
-                                // Send message via Feishu API
+                                info!("Feishu outbound: received message for chat_id={}, content_len={}",
+                                    outbound.chat_id, outbound.content.len());
+
                                 let content = json!({
                                     "text": outbound.content,
                                 })
@@ -280,27 +228,96 @@ impl FeishuConnector {
                                     .await
                                 {
                                     Ok(_) => {
-                                        info!("Sent Feishu message to {}", outbound.chat_id);
+                                        info!("Feishu outbound: message sent to {}", outbound.chat_id);
                                     }
                                     Err(e) => {
-                                        error!("Failed to send Feishu message: {}", e);
+                                        error!("Feishu outbound: failed to send message: {}", e);
                                     }
                                 }
                             }
                             None => {
-                                // No message, wait a bit
                                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                             }
                         }
                     }
                 });
 
-                // Give outbound task a moment to start
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                // Wait a bit for outbound handler to start
+                tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
+                // Create event handler with message processing
+                let bus_for_handler = bus.clone();
+                let event_handler = EventDispatcherHandler::builder()
+                    .register_p2_im_message_receive_v1(move |event| {
+                        let bus_clone = bus_for_handler.clone();
+
+                        info!("Feishu event received: type={}, sender={:?}",
+                            event.event.message.message_type,
+                            event.event.sender.sender_id.open_id);
+
+                        // Only handle text messages
+                        if event.event.message.message_type != "text" {
+                            debug!("Skipping non-text message type: {}", event.event.message.message_type);
+                            return;
+                        }
+
+                        // Get sender open_id
+                        let sender_open_id = event.event.sender.sender_id.open_id;
+                        let chat_id = event.event.message.chat_id;
+
+                        info!("Feishu: processing text message from chat_id={}, sender={}",
+                            chat_id, sender_open_id);
+
+                        // Parse message content
+                        let content: serde_json::Value = match serde_json::from_str(&event.event.message.content) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                error!("Feishu: failed to parse message content: {}", e);
+                                return;
+                            }
+                        };
+
+                        let text = match content.get("text").and_then(|v| v.as_str()) {
+                            Some(t) if !t.is_empty() => t,
+                            _ => {
+                                warn!("Feishu: empty or missing text in message");
+                                return;
+                            }
+                        };
+
+                        info!("Feishu: message content='{}'", text);
+
+                        // Convert to InboundMessage
+                        let inbound = InboundMessage::new(
+                            "feishu",
+                            sender_open_id,
+                            chat_id.clone(),
+                            text.to_string(),
+                        );
+
+                        info!("Feishu: publishing inbound to bus for chat_id={}", chat_id);
+
+                        // Spawn async task to publish - this is necessary because the event handler is sync
+                        tokio::spawn(async move {
+                            match bus_clone.publish_inbound(inbound).await {
+                                Ok(_) => info!("Feishu: successfully published inbound message"),
+                                Err(e) => error!("Feishu: failed to publish inbound: {}", e),
+                            }
+                        });
+                    })
+                    .expect("Failed to register message receive handler")
+                    .build();
+
+                // Get config for WebSocket client
+                let ws_config = Arc::new(lark_client.config.clone());
+
+                info!("Feishu WebSocket config ready: app_id={}", ws_config.app_id);
+                info!("Feishu WebSocket calling LarkWsClient::open...");
+
+                // Start WebSocket connection - this blocks until connection closes
                 match LarkWsClient::open(ws_config, event_handler).await {
                     Ok(_) => {
-                        info!("Feishu WebSocket connected and running");
+                        info!("Feishu WebSocket connected successfully");
 
                         // Keep running until stopped
                         loop {
@@ -314,12 +331,25 @@ impl FeishuConnector {
                     }
                     Err(e) => {
                         error!("Feishu WebSocket connection failed: {:?}", e);
+
+                        // Keep running until stopped even if WebSocket failed
+                        loop {
+                            tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                            let running_guard = running.lock().await;
+                            if !*running_guard {
+                                info!("Feishu WebSocket stopping after error");
+                                break;
+                            }
+                        }
                     }
                 }
 
                 // Clear client on exit
                 *lark_client_store.write().await = None;
+                info!("Feishu client cleared");
             });
+
+            info!("Feishu WebSocket task ended");
         });
     }
 }

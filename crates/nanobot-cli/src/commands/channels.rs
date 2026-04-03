@@ -87,6 +87,22 @@ pub async fn login(channel_name: String, force: bool, config_path: Option<&str>)
                 "verification_token": verification_token.trim(),
             })
         }
+        "qq" => {
+            println!("Enter your QQ Bot App ID:");
+            let app_id = read_line()?;
+            println!("Enter your QQ Bot Client Secret:");
+            let client_secret = read_line()?;
+            println!("Enter your Bot QQ number (optional, press Enter to skip):");
+            let bot_qq = read_line()?;
+            let mut config = serde_json::json!({
+                "app_id": app_id.trim(),
+                "client_secret": client_secret.trim(),
+            });
+            if !bot_qq.trim().is_empty() {
+                config["bot_qq"] = serde_json::json!(bot_qq.trim());
+            }
+            config
+        }
         _ => {
             anyhow::bail!("Interactive login not supported for channel '{}'", channel_name);
         }
@@ -115,7 +131,15 @@ pub async fn login(channel_name: String, force: bool, config_path: Option<&str>)
                     channel_config["verification_token"].clone(),
                 )
         }
-        _ => ChannelAuth::new(""),
+        "qq" => {
+            let token = channel_config["client_secret"].as_str().unwrap_or("");
+            ChannelAuth::new(token)
+                .with_extra("app_id", channel_config["app_id"].clone())
+                .with_extra("bot_qq", channel_config["bot_qq"].clone())
+        }
+        _ => {
+            anyhow::bail!("Unsupported channel '{}'", channel_name);
+        }
     };
 
     auth_storage.set_channel(&channel_name, auth).await?;
@@ -236,7 +260,7 @@ pub async fn start(channel_name: String, config_path: Option<&str>) -> Result<()
 
     println!("🚀 Starting channel: {}", channel_name);
 
-    // For Feishu, we need to configure the connector with auth storage
+    // For Feishu and QQ, we need to configure the connector with auth storage
     // so it can load credentials
     if channel_name == "feishu" {
         // Downcast to FeishuConnector and set auth storage
@@ -246,13 +270,24 @@ pub async fn start(channel_name: String, config_path: Option<&str>) -> Result<()
                 feishu_connector.set_config_from_auth(&auth).await?;
             }
         }
+    } else if channel_name == "qq" {
+        // Downcast to QQConnector and set auth storage
+        if let Some(qq_connector) = connector.as_any().downcast_ref::<nanobot_channels::qq::QQConnector>() {
+            // Configure from auth storage
+            if let Some(auth) = auth_storage.get_channel(&channel_name).await {
+                qq_connector.set_config_from_auth(&auth).await?;
+            }
+        }
     }
 
     // Create message bus for channel communication
     let message_bus = MessageBus::new();
 
+    info!("Message bus created for channel {}", channel_name);
+
     // Create provider for AI responses
     let model = config.agents.defaults.model.clone();
+    info!("Using model: {} for channel {}", model, channel_name);
     let (provider_config, provider_spec) = match_provider(
         &config.providers,
         Some(&model),
@@ -310,11 +345,15 @@ pub async fn start(channel_name: String, config_path: Option<&str>) -> Result<()
 
             // Start agent loop in background
             let agent_loop_clone = agent_loop.clone();
+            let channel_name_clone = channel_name.clone();
             tokio::spawn(async move {
+                info!("Starting agent loop for channel {}", channel_name_clone);
                 if let Err(e) = agent_loop_clone.run().await {
                     error!("Agent loop error: {}", e);
                 }
             });
+
+            info!("Agent loop spawned for channel {}", channel_name);
 
             // Keep the main task alive while the channel runs
             loop {

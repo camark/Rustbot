@@ -7,6 +7,7 @@ use tokio::sync::{RwLock, watch};
 use tracing::{info, warn, error};
 
 use crate::session::SessionManager;
+use crate::session::Session;
 
 /// Heartbeat service configuration
 #[derive(Debug, Clone)]
@@ -87,7 +88,7 @@ impl HeartbeatService {
                         info!("Running heartbeat maintenance tasks");
 
                         // Cleanup expired sessions
-                        match session_manager.cleanup_expired(config.max_session_age_days) {
+                        match session_manager.cleanup_expired(config.max_session_age_days).await {
                             Ok(count) => {
                                 if count > 0 {
                                     info!("Cleaned up {} expired sessions", count);
@@ -102,7 +103,7 @@ impl HeartbeatService {
                         if config.enable_consolidation {
                             let consolidated = session_manager.consolidate_old_sessions(
                                 config.consolidation_threshold,
-                                &|session| {
+                                |session: &Session| {
                                     // In production, this would call an LLM to generate a summary
                                     // For now, just return a placeholder
                                     Some(format!(
@@ -111,7 +112,7 @@ impl HeartbeatService {
                                         session.created_at
                                     ))
                                 },
-                            );
+                            ).await;
                             if consolidated > 0 {
                                 info!("Consolidated {} sessions", consolidated);
                             }
@@ -153,21 +154,21 @@ impl HeartbeatService {
         info!("Running immediate maintenance");
 
         // Cleanup expired sessions
-        let count = self.session_manager.cleanup_expired(self.config.max_session_age_days)?;
+        let count = self.session_manager.cleanup_expired(self.config.max_session_age_days).await?;
         info!("Cleaned up {} expired sessions", count);
 
         // Consolidate old sessions
         if self.config.enable_consolidation {
             let consolidated = self.session_manager.consolidate_old_sessions(
                 self.config.consolidation_threshold,
-                &|session| {
+                |session: &Session| {
                     Some(format!(
                         "Session summary: {} messages from {}",
                         session.messages.len(),
                         session.created_at
                     ))
                 },
-            );
+            ).await;
             info!("Consolidated {} sessions", consolidated);
         }
 
