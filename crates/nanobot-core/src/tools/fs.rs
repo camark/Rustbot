@@ -28,7 +28,29 @@ impl ReadFileTool {
     }
 
     fn resolve_path(&self, path: &str) -> ToolResult<PathBuf> {
-        let path = PathBuf::from(path);
+        use std::path::Component;
+
+        // First, handle special Chinese path names
+        let path_str = match path {
+            "桌面" | "桌面/" => "~/Desktop",
+            "文档" | "文档/" => "~/Documents",
+            "下载" | "下载/" => "~/Downloads",
+            _ => path,
+        };
+
+        // Expand ~ to home directory
+        let path = if path_str.starts_with("~/") {
+            let home = dirs::home_dir()
+                .ok_or_else(|| ToolError::Execution("Home directory not found".to_string()))?;
+            // Remove ~/ prefix and join with home directory
+            let rel_path = path_str[2..].trim_start_matches('/'); // Remove ~/ and any leading /
+            home.join(rel_path)
+        } else if path_str == "~" {
+            dirs::home_dir()
+                .ok_or_else(|| ToolError::Execution("Home directory not found".to_string()))?
+        } else {
+            PathBuf::from(path_str)
+        };
 
         // Make absolute if relative
         let abs_path = if path.is_absolute() {
@@ -37,21 +59,30 @@ impl ReadFileTool {
             self.workspace.join(&path)
         };
 
-        // Check if within allowed directory
-        if let Some(ref allowed) = self.allowed_dir {
-            if !abs_path.starts_with(allowed) {
-                return Err(ToolError::Execution(format!(
-                    "Access denied: {} is outside allowed directory",
-                    path.display()
-                )));
+        // Normalize path (remove .. and . components without following symlinks)
+        // This avoids issues with canonicalize() on Windows returning UNC paths
+        let mut normalized = PathBuf::new();
+        for component in abs_path.components() {
+            match component {
+                Component::ParentDir => {
+                    // Go up one directory if possible
+                    normalized.pop();
+                }
+                Component::CurDir => {
+                    // Skip current directory
+                }
+                Component::Normal(_) | Component::Prefix(_) | Component::RootDir => {
+                    normalized.push(component);
+                }
             }
         }
 
-        // Security: resolve and verify no traversal
-        let canonical = abs_path
+        // Now canonicalize to verify file exists and resolve symlinks
+        let canonical = normalized
             .canonicalize()
-            .map_err(|e| ToolError::Execution(format!("File not found: {}", e)))?;
+            .map_err(|e| ToolError::Execution(format!("File not found: {} ({})", e, normalized.display())))?;
 
+        // Check if within allowed directory (compare canonical paths)
         if let Some(ref allowed) = self.allowed_dir {
             if !canonical.starts_with(allowed) {
                 return Err(ToolError::Execution(
@@ -128,24 +159,33 @@ impl WriteFileTool {
     }
 
     fn resolve_path(&self, path: &str) -> ToolResult<PathBuf> {
-        let path = PathBuf::from(path);
+        // First, handle special Chinese path names
+        let path_str = match path {
+            "桌面" | "桌面/" => "~/Desktop",
+            "文档" | "文档/" => "~/Documents",
+            "下载" | "下载/" => "~/Downloads",
+            _ => path,
+        };
+
+        // Expand ~ to home directory
+        let path = if path_str.starts_with("~/") {
+            let home = dirs::home_dir()
+                .ok_or_else(|| ToolError::Execution("Home directory not found".to_string()))?;
+            let rel_path = path_str[2..].trim_start_matches('/');
+            home.join(rel_path)
+        } else if path_str == "~" {
+            dirs::home_dir()
+                .ok_or_else(|| ToolError::Execution("Home directory not found".to_string()))?
+        } else {
+            PathBuf::from(path_str)
+        };
 
         // Make absolute if relative
         let abs_path = if path.is_absolute() {
-            path
+            path.clone()
         } else {
             self.workspace.join(&path)
         };
-
-        // Check if within allowed directory
-        if let Some(ref allowed) = self.allowed_dir {
-            if !abs_path.starts_with(allowed) {
-                return Err(ToolError::Execution(format!(
-                    "Access denied: {} is outside allowed directory",
-                    abs_path.display()
-                )));
-            }
-        }
 
         Ok(abs_path.clone())
     }
@@ -193,10 +233,19 @@ impl Tool for WriteFileTool {
 
         let file_path = self.resolve_path(path)?;
 
-        // Create parent directories if needed
+        // Canonicalize parent path for security check (create parent if needed)
         if let Some(parent) = file_path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| ToolError::Execution(format!("Failed to create directories: {}", e)))?;
+            // After creating parent, canonicalize to verify it's within allowed dir
+            if let Some(ref allowed) = self.allowed_dir {
+                let canonical_parent = parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf());
+                if !canonical_parent.starts_with(allowed) {
+                    return Err(ToolError::Execution(
+                        "Access denied: path traversal detected".to_string(),
+                    ));
+                }
+            }
         }
 
         tokio::fs::write(&file_path, content)
@@ -230,25 +279,64 @@ impl EditFileTool {
     }
 
     fn resolve_path(&self, path: &str) -> ToolResult<PathBuf> {
-        let path = PathBuf::from(path);
+        // First, handle special Chinese path names
+        let path_str = match path {
+            "桌面" | "桌面/" => "~/Desktop",
+            "文档" | "文档/" => "~/Documents",
+            "下载" | "下载/" => "~/Downloads",
+            _ => path,
+        };
+
+        // Expand ~ to home directory
+        let path = if path_str.starts_with("~/") {
+            let home = dirs::home_dir()
+                .ok_or_else(|| ToolError::Execution("Home directory not found".to_string()))?;
+            let rel_path = path_str[2..].trim_start_matches('/');
+            home.join(rel_path)
+        } else if path_str == "~" {
+            dirs::home_dir()
+                .ok_or_else(|| ToolError::Execution("Home directory not found".to_string()))?
+        } else {
+            PathBuf::from(path_str)
+        };
+
+        // Make absolute if relative
         let abs_path = if path.is_absolute() {
             path.clone()
         } else {
             self.workspace.join(&path)
         };
 
-        if let Some(ref allowed) = self.allowed_dir {
-            if !abs_path.starts_with(allowed) {
-                return Err(ToolError::Execution(format!(
-                    "Access denied: {} is outside allowed directory",
-                    path.display()
-                )));
+        // Normalize path (remove .. and . components)
+        use std::path::Component;
+        let mut normalized = PathBuf::new();
+        for component in abs_path.components() {
+            match component {
+                Component::ParentDir => {
+                    normalized.pop();
+                }
+                Component::CurDir => {
+                    // Skip
+                }
+                Component::Normal(_) | Component::Prefix(_) | Component::RootDir => {
+                    normalized.push(component);
+                }
             }
         }
 
-        let canonical = abs_path
+        // Canonicalize to verify file exists
+        let canonical = normalized
             .canonicalize()
-            .map_err(|e| ToolError::Execution(format!("File not found: {}", e)))?;
+            .map_err(|e| ToolError::Execution(format!("File not found: {} ({})", e, normalized.display())))?;
+
+        // Check if within allowed directory
+        if let Some(ref allowed) = self.allowed_dir {
+            if !canonical.starts_with(allowed) {
+                return Err(ToolError::Execution(
+                    "Access denied: path traversal detected".to_string(),
+                ));
+            }
+        }
 
         Ok(canonical)
     }
@@ -369,25 +457,65 @@ impl ListDirTool {
     }
 
     fn resolve_path(&self, path: &str) -> ToolResult<PathBuf> {
-        let path = PathBuf::from(path);
+        // First, handle special Chinese path names
+        let path_str = match path {
+            "桌面" | "桌面/" => "~/Desktop",
+            "文档" | "文档/" => "~/Documents",
+            "下载" | "下载/" => "~/Downloads",
+            _ => path,
+        };
+
+        // Expand ~ to home directory
+        let path = if path_str.starts_with("~/") {
+            let home = dirs::home_dir()
+                .ok_or_else(|| ToolError::Execution("Home directory not found".to_string()))?;
+            // Remove ~/ prefix and join with home directory
+            let rel_path = path_str[2..].trim_start_matches('/'); // Remove ~/ and any leading /
+            home.join(rel_path)
+        } else if path_str == "~" {
+            dirs::home_dir()
+                .ok_or_else(|| ToolError::Execution("Home directory not found".to_string()))?
+        } else {
+            PathBuf::from(path_str)
+        };
+
+        // Make absolute if relative
         let abs_path = if path.is_absolute() {
             path.clone()
         } else {
             self.workspace.join(&path)
         };
 
-        if let Some(ref allowed) = self.allowed_dir {
-            if !abs_path.starts_with(allowed) {
-                return Err(ToolError::Execution(format!(
-                    "Access denied: {} is outside allowed directory",
-                    path.display()
-                )));
+        // Normalize path (remove .. and . components)
+        use std::path::Component;
+        let mut normalized = PathBuf::new();
+        for component in abs_path.components() {
+            match component {
+                Component::ParentDir => {
+                    normalized.pop();
+                }
+                Component::CurDir => {
+                    // Skip
+                }
+                Component::Normal(_) | Component::Prefix(_) | Component::RootDir => {
+                    normalized.push(component);
+                }
             }
         }
 
-        let canonical = abs_path
+        // Canonicalize to verify directory exists
+        let canonical = normalized
             .canonicalize()
-            .map_err(|e| ToolError::Execution(format!("Directory not found: {}", e)))?;
+            .map_err(|e| ToolError::Execution(format!("Directory not found: {} ({})", e, normalized.display())))?;
+
+        // Check if within allowed directory
+        if let Some(ref allowed) = self.allowed_dir {
+            if !canonical.starts_with(allowed) {
+                return Err(ToolError::Execution(
+                    "Access denied: path traversal detected".to_string(),
+                ));
+            }
+        }
 
         Ok(canonical)
     }
@@ -400,7 +528,7 @@ impl Tool for ListDirTool {
     }
 
     fn description(&self) -> &str {
-        "List the contents of a directory. Returns files and subdirectories."
+        "List the contents of a directory. Returns files and subdirectories with 'name', 'type', and 'full_path' fields. Use the 'full_path' value to read files with read_file tool. Use the 'pattern' parameter to filter files (e.g., '*.pdf' for PDF files, '*.txt' for text files)."
     }
 
     fn parameters(&self) -> Value {
@@ -409,7 +537,11 @@ impl Tool for ListDirTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the directory to list",
+                    "description": "Path to the directory to list (e.g., '~/Desktop' or '~/Documents')",
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": "Optional glob pattern to filter files (e.g., '*.pdf' for PDF files, '*.txt' for text files)",
                 },
             },
             "required": ["path"],
@@ -422,7 +554,11 @@ impl Tool for ListDirTool {
             .and_then(|p| p.as_str())
             .ok_or_else(|| ToolError::InvalidParams("Missing 'path' parameter".to_string()))?;
 
-        info!("Listing directory: {}", path);
+        let pattern = params
+            .get("pattern")
+            .and_then(|p| p.as_str());
+
+        info!("Listing directory: {} (pattern: {:?})", path, pattern);
 
         let dir_path = self.resolve_path(path)?;
 
@@ -455,9 +591,17 @@ impl Tool for ListDirTool {
                 })
                 .unwrap_or("unknown");
 
+            // Apply pattern filter if specified
+            if let Some(pat) = pattern {
+                if !match_pattern(&file_name, pat) {
+                    continue;
+                }
+            }
+
             entries.push(json!({
                 "name": file_name,
                 "type": file_type,
+                "full_path": dir_path.join(&file_name).to_string_lossy(),
             }));
         }
 
@@ -467,4 +611,25 @@ impl Tool for ListDirTool {
             "count": entries.len(),
         }))
     }
+}
+
+/// Simple glob pattern matching (supports only * wildcard)
+fn match_pattern(name: &str, pattern: &str) -> bool {
+    if pattern.is_empty() {
+        return true;
+    }
+
+    // Handle *.ext pattern
+    if pattern.starts_with("*.") {
+        let ext = &pattern[1..]; // Get ".ext"
+        return name.ends_with(ext);
+    }
+
+    // Handle * pattern (match all)
+    if pattern == "*" {
+        return true;
+    }
+
+    // Exact match
+    name == pattern
 }

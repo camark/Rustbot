@@ -58,7 +58,7 @@ pub struct AgentLoop {
 
 impl AgentLoop {
     /// Create a new agent loop
-    pub fn new(
+    pub async fn new(
         bus: MessageBus,
         provider: Arc<dyn LLMProvider>,
         config: AgentLoopConfig,
@@ -82,32 +82,40 @@ impl AgentLoop {
         };
 
         // Register default tools
-        loop_.register_default_tools();
+        loop_.register_default_tools().await;
 
         Ok(loop_)
     }
 
     /// Register default tools
-    fn register_default_tools(&mut self) {
+    async fn register_default_tools(&mut self) {
         use crate::tools::*;
 
-        // Shell tool
+        // Shell tool - allow access to entire home directory for practical use
         let shell_config = ShellToolConfig::default();
-        self.tools.as_ref().register(Box::new(ShellTool::new(self.workspace.to_string_lossy().to_string(), shell_config)));
+        self.tools.as_ref().register(Box::new(ShellTool::new(self.workspace.to_string_lossy().to_string(), shell_config))).await;
 
-        // Filesystem tools
-        let allowed_dir = Some(self.workspace.clone());
-        self.tools.as_ref().register(Box::new(ReadFileTool::new(&self.workspace, allowed_dir.clone())));
-        self.tools.as_ref().register(Box::new(WriteFileTool::new(&self.workspace, allowed_dir.clone())));
-        self.tools.as_ref().register(Box::new(EditFileTool::new(&self.workspace, allowed_dir.clone())));
-        self.tools.as_ref().register(Box::new(ListDirTool::new(&self.workspace, allowed_dir.clone())));
+        // Filesystem tools - use home directory as allowed dir for convenience
+        // This allows access to Desktop, Documents, etc.
+        let allowed_dir = dirs::home_dir()
+            .unwrap_or_else(|| self.workspace.clone());
+
+        // Canonicalize allowed_dir to ensure proper path comparison on Windows
+        // (canonicalize() returns UNC paths like \\?\C:\ on Windows)
+        let allowed_dir_canonical = allowed_dir.canonicalize().unwrap_or_else(|_| allowed_dir.clone());
+        info!("Using allowed directory: {} (canonical: {})", allowed_dir.display(), allowed_dir_canonical.display());
+
+        self.tools.as_ref().register(Box::new(ReadFileTool::new(&self.workspace, Some(allowed_dir_canonical.clone())))).await;
+        self.tools.as_ref().register(Box::new(WriteFileTool::new(&self.workspace, Some(allowed_dir_canonical.clone())))).await;
+        self.tools.as_ref().register(Box::new(EditFileTool::new(&self.workspace, Some(allowed_dir_canonical.clone())))).await;
+        self.tools.as_ref().register(Box::new(ListDirTool::new(&self.workspace, Some(allowed_dir_canonical)))).await;
 
         // Web tools
         let web_search_config = WebSearchConfig::default();
-        self.tools.as_ref().register(Box::new(WebSearchTool::new(web_search_config)));
-        self.tools.as_ref().register(Box::new(WebFetchTool::new(None)));
+        self.tools.as_ref().register(Box::new(WebSearchTool::new(web_search_config))).await;
+        self.tools.as_ref().register(Box::new(WebFetchTool::new(None))).await;
 
-        info!("Registered {} tools", self.tools.as_ref().tool_names().len());
+        info!("Registered {} tools", self.tools.as_ref().tool_names().await.len());
     }
 
     /// Add a hook
@@ -229,11 +237,14 @@ impl AgentLoop {
 
         info!("Dispatch: calling LLM for chat_id={}", msg.chat_id);
 
+        // Get tool definitions for LLM
+        let tool_defs = self.tools.get_definitions().await;
+
         // Call LLM
         let request = nanobot_providers::ChatRequest {
             messages: messages.clone(),
             model: Some(self.model.clone()),
-            tools: Some(self.tools.get_definitions().iter().map(|v| {
+            tools: Some(tool_defs.iter().map(|v| {
                 serde_json::from_value(v.clone()).ok()
             }).filter_map(|x| x).collect()),
             max_tokens: Some(8192),
@@ -250,43 +261,56 @@ impl AgentLoop {
         let mut current_response = response;
 
         loop {
-            // Handle the current response
+            // Handle the current response - publish to channel and save to session
             info!("Dispatch: handling response for chat_id={}", msg.chat_id);
-            self.handle_response(&msg, &mut session_handle, current_response).await?;
 
-            // If there are tool calls, execute them and get another response
-            if self.tools.has(&msg.content) || /* check for tool calls in session */
-               session_handle.get_history(0).last().and_then(|v| v.get("role")).and_then(|r| r.as_str()) == Some("tool") {
-                // Tool was just executed, get another LLM response
-                let history = session_handle.get_history(0);
-                let messages_value = self.context.build_messages(
-                    history,
-                    "",
-                    &msg.channel,
-                    &msg.chat_id,
-                );
+            // Check for tool calls before handling response
+            let has_tool_calls = current_response.has_tool_calls();
 
-                let messages: Vec<Message> = messages_value
-                    .into_iter()
-                    .filter_map(|v| serde_json::from_value(v).ok())
-                    .collect();
+            if has_tool_calls {
+                // Execute tool calls and get tool results
+                info!("Dispatch: detected {} tool calls, executing...", current_response.tool_calls.len());
+                let tool_response = self.execute_tool_calls(&msg, &mut session_handle, &current_response.tool_calls).await?;
 
-                let request = nanobot_providers::ChatRequest {
-                    messages,
-                    model: Some(self.model.clone()),
-                    tools: Some(self.tools.get_definitions().iter().map(|v| {
-                        serde_json::from_value(v.clone()).ok()
-                    }).filter_map(|x| x).collect()),
-                    max_tokens: Some(8192),
-                    temperature: Some(0.1),
-                    reasoning_effort: None,
-                    tool_choice: Some(nanobot_providers::ToolChoice::Auto),
-                    stream: false,
-                };
+                // Save the tool execution results to session (already done in execute_tool_calls)
+                // Get another LLM response based on tool results
+                if let Some(response) = tool_response {
+                    info!("Dispatch: got follow-up response from LLM after tool execution");
 
-                current_response = self.provider.chat_with_retry(request).await?;
+                    // Check if the follow-up response also has tool calls - if so, continue the loop
+                    if response.has_tool_calls() {
+                        info!("Dispatch: follow-up response has {} tool calls, continuing loop", response.tool_calls.len());
+                        current_response = response;
+                        continue; // Continue the loop to execute more tool calls
+                    }
+
+                    // Send the final response to channel
+                    if let Some(content) = &response.content {
+                        if !content.is_empty() {
+                            info!("Dispatch: sending tool result content (len={}): {}", content.len(), content);
+                            let outbound = OutboundMessage::new(&msg.channel, &msg.chat_id, content);
+                            match self.bus.publish_outbound(outbound).await {
+                                Ok(_) => info!("Successfully published tool result to channel"),
+                                Err(e) => error!("Failed to publish tool result: {}", e),
+                            }
+                        } else {
+                            warn!("Dispatch: response content is empty");
+                        }
+                    } else {
+                        warn!("Dispatch: response has no content");
+                    }
+                    // Save final assistant response to session
+                    let final_msg = serde_json::json!({
+                        "role": "assistant",
+                        "content": response.content,
+                    });
+                    session_handle.add_message(final_msg);
+                    session_handle.save()?;
+                }
+                break;
             } else {
-                // No tool calls, we're done
+                // No tool calls, just send the response
+                self.handle_response(&msg, &mut session_handle, current_response).await?;
                 info!("Dispatch: completed for chat_id={}", msg.chat_id);
                 break;
             }
@@ -364,8 +388,11 @@ impl AgentLoop {
             let result = self.tools.execute(&tool_call.name, tool_call.arguments.clone()).await;
 
             let result_value = match result {
-                Ok(v) => v,
-                Err(e) => serde_json::json!({ "error": e.to_string() }),
+                Ok(v) => {
+                    // Convert result to string - some providers expect string content
+                    v.to_string()
+                },
+                Err(e) => format!("{{\"error\": \"{}\"}}", e.to_string()),
             };
 
             // Save tool response to session
@@ -374,17 +401,38 @@ impl AgentLoop {
                 "content": result_value,
                 "tool_call_id": tool_call.id,
             });
+            info!("Tool response saved to session: role=tool, id={}, content_len={}", tool_call.id, result_value.len());
             session.add_message(tool_msg);
         }
 
         // After executing all tool calls, make another LLM call to get the final response
         let history = session.get_history(0);
-        let messages_value = self.context.build_messages(
-            history,
-            "",
-            &msg.channel,
-            &msg.chat_id,
-        );
+        info!("=== DEBUG: Session History ({} messages) ===", history.len());
+        for (i, h) in history.iter().enumerate() {
+            let role = h.get("role").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let content_len = h.get("content").and_then(|v| v.as_str()).map(|s| s.len()).unwrap_or(0);
+            info!("  [{}] role={}, content_len={}", i, role, content_len);
+        }
+
+        let messages_value = self.context.build_messages_from_history(history);
+        info!("=== DEBUG: Messages to send to LLM ({} messages) ===", messages_value.len());
+        for (i, m) in messages_value.iter().enumerate() {
+            let role = m.get("role").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let content_preview = m.get("content")
+                .and_then(|v| v.as_str())
+                .map(|s| {
+                    if s.len() > 100 {
+                        // Use char-based slicing to avoid UTF-8 boundary issues
+                        let truncated: String = s.chars().take(100).collect();
+                        format!("{}...", truncated)
+                    } else {
+                        s.to_string()
+                    }
+                })
+                .unwrap_or_else(|| "[non-string content]".to_string());
+            info!("  [{}] role={}, content_preview={}", i, role, content_preview);
+        }
+        info!("=== END DEBUG ===");
 
         // Convert Value messages to Message structs
         let messages: Vec<Message> = messages_value
@@ -392,10 +440,13 @@ impl AgentLoop {
             .filter_map(|v| serde_json::from_value(v).ok())
             .collect();
 
+        // Get tool definitions for LLM
+        let tool_defs = self.tools.get_definitions().await;
+
         let request = nanobot_providers::ChatRequest {
             messages,
             model: Some(self.model.clone()),
-            tools: Some(self.tools.get_definitions().iter().map(|v| {
+            tools: Some(tool_defs.iter().map(|v| {
                 serde_json::from_value(v.clone()).ok()
             }).filter_map(|x| x).collect()),
             max_tokens: Some(8192),
@@ -406,6 +457,10 @@ impl AgentLoop {
         };
 
         let response = self.provider.chat_with_retry(request).await?;
+        info!("=== DEBUG: LLM Response ===");
+        info!("  content: {:?}", response.content);
+        info!("  tool_calls: {:?}", response.tool_calls);
+        info!("=== END DEBUG ===");
         Ok(Some(response))
     }
 

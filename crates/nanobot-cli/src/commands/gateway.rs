@@ -7,7 +7,7 @@ use nanobot_config::{ConfigLoader, ConfigPaths};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{info, error};
+use tracing::{info, error, warn};
 
 /// Run the gateway command
 pub async fn run(port: Option<u16>, config_path: Option<&str>) -> Result<()> {
@@ -141,6 +141,61 @@ pub async fn run(port: Option<u16>, config_path: Option<&str>) -> Result<()> {
     }
     println!();
 
+    // Start AgentLoop to process messages
+    println!("Starting AgentLoop...");
+
+    // Get default agent config from config file
+    let agent_defaults = config.agents.defaults.clone();
+    let model = agent_defaults.model.clone();
+    let provider_name = agent_defaults.provider.clone();
+
+    // Get provider using match_provider
+    let (provider_config, provider_spec) = nanobot_providers::match_provider(
+        &config.providers,
+        Some(&model),
+        &provider_name,
+    ).context("Failed to find provider. Please check your config.")?;
+
+    // Get API key and base
+    let api_key = provider_config.api_key.clone();
+    let api_base = provider_config.api_base.clone()
+        .or_else(|| provider_spec.default_api_base.map(String::from))
+        .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+
+    // Create provider
+    let provider = nanobot_providers::create_provider_from_spec(
+        api_key,
+        api_base,
+        model.clone(),
+        provider_spec,
+    );
+
+    let agent_loop_config = nanobot_core::AgentLoopConfig {
+        workspace: config_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from(".")),
+        model: model.clone(),
+        max_iterations: 40,
+        context_window_tokens: 65_536,
+        timezone: "Asia/Shanghai".to_string(),
+        tools_config: None,
+    };
+
+    let agent_loop = nanobot_core::AgentLoop::new(
+        bus.clone(),
+        Arc::from(provider),
+        agent_loop_config,
+    ).await.context("Failed to create AgentLoop")?;
+
+    // Start AgentLoop in background
+    let agent_loop_clone = agent_loop.clone();
+    tokio::spawn(async move {
+        if let Err(e) = agent_loop_clone.run().await {
+            error!("AgentLoop error: {}", e);
+        }
+    });
+
+    println!("  ✓ AgentLoop started (model: {})", model);
+    println!();
+
     // Keep running until interrupted
     println!("Gateway is running. Press Ctrl+C to stop.");
     println!();
@@ -149,6 +204,9 @@ pub async fn run(port: Option<u16>, config_path: Option<&str>) -> Result<()> {
     tokio::signal::ctrl_c().await?;
     println!();
     println!("Stopping gateway...");
+
+    // Stop agent loop
+    agent_loop.stop().await;
 
     // Stop all channels
     manager.stop_all().await;
