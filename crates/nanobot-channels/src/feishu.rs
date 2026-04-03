@@ -100,7 +100,7 @@ impl FeishuConnector {
     }
 
     /// Send a message via Feishu API using open-lark client
-    async fn send_feishu_message(&self, chat_id: &str, text: &str) -> Result<()> {
+    pub async fn send_feishu_message(&self, chat_id: &str, text: &str) -> Result<()> {
         // For sending messages, we need to wait for the client to be initialized
         // This is a simplified implementation - in production you may want to poll
         // or use a different pattern
@@ -137,7 +137,12 @@ impl FeishuConnector {
     }
 
     /// Start WebSocket long connection - runs on a dedicated thread with its own runtime
-    fn spawn_websocket_task(bus: MessageBus, config: FeishuConfig, running: Arc<Mutex<bool>>, lark_client_store: Arc<RwLock<Option<Arc<LarkClient>>>>) {
+    fn spawn_websocket_task(
+        bus: MessageBus,
+        config: FeishuConfig,
+        running: Arc<Mutex<bool>>,
+        lark_client_store: Arc<RwLock<Option<Arc<LarkClient>>>>,
+    ) {
         // Use std::thread::spawn to avoid Send requirement on the event handler
         // We create a new runtime inside the thread
         std::thread::spawn(move || {
@@ -172,9 +177,10 @@ impl FeishuConnector {
                 }
 
                 // Create event handler with message processing
+                let bus_for_handler = bus.clone();
                 let event_handler = EventDispatcherHandler::builder()
                     .register_p2_im_message_receive_v1(move |event| {
-                        let bus_clone = bus.clone();
+                        let bus_clone = bus_for_handler.clone();
 
                         tokio::spawn(async move {
                             // Only handle text messages
@@ -227,9 +233,75 @@ impl FeishuConnector {
                 // Start WebSocket connection using open-lark SDK
                 // This runs until the connection is closed or error occurs
                 info!("Feishu WebSocket calling LarkWsClient::open...");
+
+                // Spawn outbound message handler BEFORE connecting WebSocket
+                // This way it's ready to process outbound messages as soon as they arrive
+                let outbound_running = running.clone();
+                let outbound_lark_client = lark_client.clone();
+                let outbound_bus = bus.clone();
+                tokio::spawn(async move {
+                    info!("Starting Feishu outbound message handler");
+                    loop {
+                        // Check if we should stop
+                        {
+                            let guard = outbound_running.lock().await;
+                            if !*guard {
+                                info!("Outbound handler stopping");
+                                break;
+                            }
+                        }
+
+                        // Try to get outbound message (non-blocking)
+                        match outbound_bus.try_consume_outbound().await {
+                            Some(outbound) => {
+                                debug!("Received outbound message for Feishu: {}", outbound.chat_id);
+                                // Send message via Feishu API
+                                let content = json!({
+                                    "text": outbound.content,
+                                })
+                                .to_string();
+
+                                let request = CreateMessageRequest::builder()
+                                    .receive_id_type("chat_id")
+                                    .request_body(
+                                        CreateMessageRequestBody::builder()
+                                            .receive_id(&outbound.chat_id)
+                                            .msg_type("text")
+                                            .content(&content)
+                                            .build(),
+                                    )
+                                    .build();
+
+                                match outbound_lark_client
+                                    .im
+                                    .v1
+                                    .message
+                                    .create(request, None)
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        info!("Sent Feishu message to {}", outbound.chat_id);
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to send Feishu message: {}", e);
+                                    }
+                                }
+                            }
+                            None => {
+                                // No message, wait a bit
+                                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                            }
+                        }
+                    }
+                });
+
+                // Give outbound task a moment to start
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
                 match LarkWsClient::open(ws_config, event_handler).await {
                     Ok(_) => {
                         info!("Feishu WebSocket connected and running");
+
                         // Keep running until stopped
                         loop {
                             tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;

@@ -60,3 +60,8 @@ nanobot-bus = { path = "crates/nanobot-bus" }
 nanobot-core = { path = "crates/nanobot-core" }
 nanobot-channels = { path = "crates/nanobot-channels" }
 nanobot-api = { path = "crates/nanobot-api" }
+
+# Patch for open-lark SDK - fix nullable user_id field in Feishu event deserialization
+# The SDK expects String but Feishu API returns null for user_id in some cases
+[patch.crates-io]
+open-lark = { path = "C:/Users/gongm/.cargo/registry/src/mirrors.tuna.tsinghua.edu.cn-e791a3f93f26854f/open-lark-0.14.0" }

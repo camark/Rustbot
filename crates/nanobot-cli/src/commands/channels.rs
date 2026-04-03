@@ -5,7 +5,11 @@ use nanobot_channels::{AuthStorage, ChannelManager, ChannelRegistry, create_defa
 use nanobot_channels::auth::ChannelAuth;
 use nanobot_config::{Config, ConfigLoader};
 use std::path::PathBuf;
-use tracing::{info, debug};
+use tracing::{info, debug, error};
+use std::sync::Arc;
+use nanobot_bus::MessageBus;
+use nanobot_core::{AgentLoop, AgentLoopConfig};
+use nanobot_providers::{create_provider_from_spec, match_provider, ProviderBackendType};
 
 /// Run the channels login command
 pub async fn login(channel_name: String, force: bool, config_path: Option<&str>) -> Result<()> {
@@ -204,7 +208,7 @@ pub async fn start(channel_name: String, config_path: Option<&str>) -> Result<()
         });
 
     let loader = ConfigLoader::new(&config_path);
-    let _config = loader.load().context("Failed to load config")?;
+    let config = loader.load().context("Failed to load config")?;
 
     // Get config directory for auth storage
     let config_dir = config_path.parent().unwrap_or_else(|| std::path::Path::new("."));
@@ -245,7 +249,53 @@ pub async fn start(channel_name: String, config_path: Option<&str>) -> Result<()
     }
 
     // Create message bus for channel communication
-    let message_bus = nanobot_bus::MessageBus::new();
+    let message_bus = MessageBus::new();
+
+    // Create provider for AI responses
+    let model = config.agents.defaults.model.clone();
+    let (provider_config, provider_spec) = match_provider(
+        &config.providers,
+        Some(&model),
+        &config.agents.defaults.provider,
+    ).context("No provider configured. Please add your API key to the config.")?;
+
+    let api_key = provider_config.api_key.clone();
+    let api_base = provider_config.api_base.clone()
+        .or_else(|| provider_spec.default_api_base.map(String::from))
+        .unwrap_or_else(|| {
+            match provider_spec.backend {
+                ProviderBackendType::OpenAiCompat => "https://api.openai.com/v1".to_string(),
+                ProviderBackendType::Anthropic => "https://api.anthropic.com".to_string(),
+                _ => "https://api.openai.com/v1".to_string(),
+            }
+        });
+
+    let provider = create_provider_from_spec(
+        api_key,
+        api_base,
+        model.clone(),
+        provider_spec,
+    );
+
+    // Create agent loop config
+    let workspace = config.workspace_path().clone();
+    let agent_config = AgentLoopConfig {
+        workspace: workspace.clone(),
+        model: model.clone(),
+        max_iterations: config.agents.defaults.max_tool_iterations as usize,
+        context_window_tokens: config.agents.defaults.context_window_tokens,
+        timezone: config.agents.defaults.timezone.clone(),
+        tools_config: None,
+    };
+
+    // Create agent loop
+    let agent_loop = AgentLoop::new(
+        message_bus.clone(),
+        Arc::from(provider),
+        agent_config,
+    ).context("Failed to create agent loop")?;
+
+    let agent_loop = Arc::new(agent_loop);
 
     // Start the channel connector
     let connector_clone = connector.clone();
@@ -254,8 +304,17 @@ pub async fn start(channel_name: String, config_path: Option<&str>) -> Result<()
     match start_result {
         Ok(_) => {
             println!("✅ Channel '{}' started successfully!", channel_name);
+            println!("🤖 AI agent ready");
             println!("📡 Listening for messages...");
             println!("Press Ctrl+C to stop");
+
+            // Start agent loop in background
+            let agent_loop_clone = agent_loop.clone();
+            tokio::spawn(async move {
+                if let Err(e) = agent_loop_clone.run().await {
+                    error!("Agent loop error: {}", e);
+                }
+            });
 
             // Keep the main task alive while the channel runs
             loop {
