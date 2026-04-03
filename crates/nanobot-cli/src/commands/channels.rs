@@ -5,7 +5,7 @@ use nanobot_channels::{AuthStorage, ChannelManager, ChannelRegistry, create_defa
 use nanobot_channels::auth::ChannelAuth;
 use nanobot_config::{Config, ConfigLoader};
 use std::path::PathBuf;
-use tracing::info;
+use tracing::{info, debug};
 
 /// Run the channels login command
 pub async fn login(channel_name: String, force: bool, config_path: Option<&str>) -> Result<()> {
@@ -189,6 +189,95 @@ pub async fn status(config_path: Option<&str>) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Run the channels start command
+pub async fn start(channel_name: String, config_path: Option<&str>) -> Result<()> {
+    // Load config
+    let config_path = config_path
+        .map(|p: &str| PathBuf::from(p))
+        .or_else(|| nanobot_config::ConfigPaths::default().map(|p| p.config_file))
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .map(|d| d.join(".nanobot").join("config.json"))
+                .unwrap_or_else(|| ".nanobot/config.json".into())
+        });
+
+    let loader = ConfigLoader::new(&config_path);
+    let _config = loader.load().context("Failed to load config")?;
+
+    // Get config directory for auth storage
+    let config_dir = config_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+
+    // Load auth storage
+    let auth_storage = AuthStorage::new(config_dir).await?;
+
+    // Check authentication
+    if !auth_storage.is_authenticated(&channel_name).await {
+        anyhow::bail!(
+            "Channel '{}' is not authenticated. Run: rustbot channels login {}",
+            channel_name,
+            channel_name
+        );
+    }
+
+    // Create registry
+    let registry = create_default_registry();
+
+    // Get channel connector
+    let connector = registry
+        .get(&channel_name)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("Channel '{}' not found", channel_name))?;
+
+    println!("🚀 Starting channel: {}", channel_name);
+
+    // For Feishu, we need to configure the connector with auth storage
+    // so it can load credentials
+    if channel_name == "feishu" {
+        // Downcast to FeishuConnector and set auth storage
+        if let Some(feishu_connector) = connector.as_any().downcast_ref::<nanobot_channels::feishu::FeishuConnector>() {
+            // Configure from auth storage
+            if let Some(auth) = auth_storage.get_channel(&channel_name).await {
+                feishu_connector.set_config_from_auth(&auth).await?;
+            }
+        }
+    }
+
+    // Create message bus for channel communication
+    let message_bus = nanobot_bus::MessageBus::new();
+
+    // Start the channel connector
+    let connector_clone = connector.clone();
+    let start_result = connector_clone.start(message_bus.clone()).await;
+
+    match start_result {
+        Ok(_) => {
+            println!("✅ Channel '{}' started successfully!", channel_name);
+            println!("📡 Listening for messages...");
+            println!("Press Ctrl+C to stop");
+
+            // Keep the main task alive while the channel runs
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                debug!("Channel {} is still running...", channel_name);
+            }
+        }
+        Err(e) => {
+            anyhow::bail!("Failed to start channel '{}': {}", channel_name, e);
+        }
+    }
+}
+
+/// Run the channels stop command
+pub async fn stop(_channel_name: String, _config_path: Option<&str>) -> Result<()> {
+    // TODO: Implement stop command
+    // This would need to:
+    // 1. Find the running channel instance
+    // 2. Call connector.stop()
+    // 3. Wait for graceful shutdown
+
+    anyhow::bail!("Stop command not yet implemented");
 }
 
 /// Helper to read a line from stdin

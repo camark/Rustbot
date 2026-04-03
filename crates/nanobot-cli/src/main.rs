@@ -132,6 +132,18 @@ enum ChannelsAction {
 
     /// Show channel status
     Status,
+
+    /// Start a channel
+    Start {
+        /// Channel name
+        name: String,
+    },
+
+    /// Stop a channel
+    Stop {
+        /// Channel name
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -218,6 +230,12 @@ async fn main() -> anyhow::Result<()> {
                 ChannelsAction::Status => {
                     commands::channels::status(cli.config.as_deref()).await?;
                 }
+                ChannelsAction::Start { name } => {
+                    commands::channels::start(name, cli.config.as_deref()).await?;
+                }
+                ChannelsAction::Stop { name } => {
+                    commands::channels::stop(name, cli.config.as_deref()).await?;
+                }
             }
         }
         Some(Commands::Api { host, port, api_key }) => {
@@ -282,6 +300,9 @@ fn init_logging(verbose: bool) {
     let subscriber = tracing_subscriber::Registry::default()
         .with(filter_layer)
         .with(fmt_layer);
+
+    // Enable log compatibility for open-lark's log crate usage
+    tracing_log::LogTracer::init().expect("Failed to initialize LogTracer");
 
     tracing::subscriber::set_global_default(subscriber)
         .expect("Failed to set global default subscriber");

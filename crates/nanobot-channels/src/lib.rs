@@ -22,7 +22,7 @@ mod telegram;
 mod discord;
 
 #[cfg(feature = "feishu")]
-mod feishu;
+pub mod feishu;
 
 pub use auth::*;
 pub use base::*;

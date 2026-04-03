@@ -222,8 +222,11 @@ impl FeishuConnector {
                 // Get config for WebSocket client
                 let ws_config = Arc::new(lark_client.config.clone());
 
+                info!("Feishu WebSocket config: app_id={}, has_app_secret={}", ws_config.app_id, !ws_config.app_secret.is_empty());
+
                 // Start WebSocket connection using open-lark SDK
                 // This runs until the connection is closed or error occurs
+                info!("Feishu WebSocket calling LarkWsClient::open...");
                 match LarkWsClient::open(ws_config, event_handler).await {
                     Ok(_) => {
                         info!("Feishu WebSocket connected and running");
@@ -396,5 +399,73 @@ impl Clone for FeishuConnector {
             message_bus: RwLock::new(message_bus),
             lark_client: RwLock::new(lark_client),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::ChannelAuth;
+
+    #[test]
+    fn test_feishu_connector_creation() {
+        let connector = FeishuConnector::new();
+        assert_eq!(connector.name(), "feishu");
+    }
+
+    #[tokio::test]
+    async fn test_feishu_config_default() {
+        let connector = FeishuConnector::new();
+        let status = connector.status().await;
+        assert_eq!(status.name, "feishu");
+        assert!(!status.authenticated);
+        assert!(!status.running);
+    }
+
+    #[tokio::test]
+    async fn test_feishu_is_authenticated() {
+        let connector = FeishuConnector::new();
+
+        // Not authenticated initially
+        assert!(!connector.is_authenticated().await);
+
+        // Set config
+        connector.set_config_from_auth(
+            &ChannelAuth::new("test_secret")
+                .with_extra("app_id", json!("test_app_id"))
+                .with_extra("verification_token", json!("test_token"))
+        ).await.unwrap();
+
+        // Should be authenticated after config
+        assert!(connector.is_authenticated().await);
+    }
+
+    #[tokio::test]
+    async fn test_feishu_status_metadata() {
+        let connector = FeishuConnector::new();
+
+        // Set config
+        connector.set_config_from_auth(
+            &ChannelAuth::new("test_secret")
+                .with_extra("app_id", json!("cli_test123"))
+                .with_extra("verification_token", json!("test_token"))
+        ).await.unwrap();
+
+        let status = connector.status().await;
+        assert!(status.metadata.get("app_id_configured").is_some());
+    }
+
+    #[test]
+    fn test_feishu_config_clone() {
+        let config = FeishuConfig {
+            app_id: "test_app".to_string(),
+            app_secret: "test_secret".to_string(),
+            verification_token: "test_token".to_string(),
+        };
+
+        let cloned = config.clone();
+        assert_eq!(config.app_id, cloned.app_id);
+        assert_eq!(config.app_secret, cloned.app_secret);
+        assert_eq!(config.verification_token, cloned.verification_token);
     }
 }
