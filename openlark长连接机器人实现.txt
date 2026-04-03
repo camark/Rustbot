@@ -1,0 +1,142 @@
+OpenLark（飞书开放平台）的长连接机器人通过 **WebSocket 长连接** 接收消息，核心是用官方 SDK 建立 WebSocket 通道、注册消息事件处理器、在开发者后台配置长连接订阅并订阅 `im.message.receive_v1` 事件。以下是完整实现步骤与代码示例：
+
+### 一、核心原理
+- 采用 **WebSocket 全双工长连接**，你的服务主动向飞书开放平台发起连接，无需公网 IP、Webhook 或 SSL 证书。
+- 消息流程：用户发消息 → 飞书开放平台 → WebSocket 推送 → 你的服务处理 → 调用 API 回复。
+- 优势：内网可部署、自动重连、无需处理验签解密。
+
+### 二、开发准备
+1. **创建飞书应用**
+    - 登录[飞书开发者后台](sslocal://flow/file_open?url=https%3A%2F%2Fopen.feishu.cn%2F&flow_extra=eyJsaW5rX3R5cGUiOiJjb2RlX2ludGVycHJldGVyIn0=)，创建**企业自建应用**（长连接不支持商店应用）。
+    - 在「应用功能 → 机器人」启用机器人能力，设置名称与头像。
+    - 获取 `App ID`、`App Secret`（「凭证与基础信息」）。
+2. **订阅事件**
+    - 进入「事件与回调 → 事件配置」，先**启动本地长连接程序**，再选择「使用长连接接收事件」并保存。
+    - 添加事件：`im.message.receive_v1`（接收消息），按需添加其他事件。
+3. **安装 SDK**
+    - Node.js：`npm install @larksuiteoapi/node-sdk`
+    - Python：`pip install lark-oapi`
+
+### 三、代码实现（Node.js 示例）
+```javascript
+const Lark = require('@larksuiteoapi/node-sdk');
+
+// 1. 配置应用凭证
+const config = {
+  appId: 'cli_xxxxxx', // 替换为你的 App ID
+  appSecret: 'xxxxxx', // 替换为你的 App Secret
+  loggerLevel: Lark.LoggerLevel.debug // 调试日志
+};
+
+// 2. 初始化事件分发器，注册消息处理
+const eventDispatcher = new Lark.EventDispatcher({})
+  .register({
+    // 监听「接收消息」事件
+    'im.message.receive_v1': async (data) => {
+      const { message, sender } = data;
+      const { chat_id, content, msg_type } = message;
+      const { user_id } = sender.sender_id;
+
+      console.log('收到消息:', { chat_id, user_id, content, msg_type });
+
+      // 3. 处理消息并回复（示例：文本消息自动回复）
+      if (msg_type === 'text') {
+        const textContent = JSON.parse(content).text;
+        await sendMessage(chat_id, `你说的是：${textContent}`);
+      }
+    }
+  });
+
+// 4. 初始化长连接客户端并启动
+const wsClient = new Lark.WSClient(config);
+wsClient.start({ eventDispatcher })
+  .then(() => console.log('长连接启动成功，正在监听消息...'))
+  .catch(err => console.error('长连接启动失败:', err));
+
+// 辅助函数：发送消息到飞书
+async function sendMessage(chatId, text) {
+  const client = new Lark.Client(config);
+  try {
+    await client.im.message.create({
+      params: { receive_id_type: 'chat_id' },
+      data: {
+        receive_id: chatId,
+        msg_type: 'text',
+        content: JSON.stringify({ text })
+      }
+    });
+    console.log('回复成功');
+  } catch (err) {
+    console.error('发送消息失败:', err);
+  }
+}
+```
+
+### 四、代码实现（Python 示例）
+```python
+from lark_oapi import Client, WSClient, EventDispatcher, LoggerLevel
+import json
+
+# 1. 配置应用凭证
+APP_ID = "cli_xxxxxx"
+APP_SECRET = "xxxxxx"
+
+# 2. 初始化事件分发器，注册消息处理
+def handle_im_message_receive_v1(data):
+    message = data.get("message", {})
+    sender = data.get("sender", {}).get("sender_id", {})
+    chat_id = message.get("chat_id")
+    content = message.get("content")
+    msg_type = message.get("msg_type")
+    user_id = sender.get("user_id")
+
+    print(f"收到消息: chat_id={chat_id}, user_id={user_id}, content={content}, msg_type={msg_type}")
+
+    # 3. 处理消息并回复
+    if msg_type == "text":
+        text = json.loads(content).get("text")
+        send_message(chat_id, f"你说的是：{text}")
+
+# 注册事件处理器
+dispatcher = EventDispatcher()
+dispatcher.register("im.message.receive_v1", handle_im_message_receive_v1)
+
+# 4. 初始化并启动长连接
+ws_client = WSClient(
+    app_id=APP_ID,
+    app_secret=APP_SECRET,
+    event_dispatcher=dispatcher,
+    logger_level=LoggerLevel.DEBUG
+)
+
+print("正在启动长连接...")
+ws_client.start()
+
+# 辅助函数：发送消息
+def send_message(chat_id, text):
+    client = Client(app_id=APP_ID, app_secret=APP_SECRET)
+    try:
+        client.im.message.create(
+            receive_id_type="chat_id",
+            receive_id=chat_id,
+            msg_type="text",
+            content=json.dumps({"text": text})
+        )
+        print("回复成功")
+    except Exception as e:
+        print(f"发送消息失败: {e}")
+```
+
+### 五、关键步骤与注意事项
+1. **启动顺序**：必须先运行本地长连接程序，再在后台保存「长连接」配置，否则保存失败。
+2. **事件类型**：核心消息事件是 `im.message.receive_v1`，可订阅卡片回调、用户入群等事件。
+3. **连接维护**：SDK 自动处理重连、心跳，无需手动维护。
+4. **权限与发布**：配置完成后创建版本、提交审核，管理员通过后机器人可用。
+5. **消息格式**：`content` 为 JSON 字符串，需解析后获取文本/图片等内容。
+
+### 六、部署与运行
+1. 运行程序：`node index.js`（Node.js）或 `python app.py`（Python）。
+2. 验证连接：后台「事件配置」显示「长连接已连接」。
+3. 测试：在飞书私聊/群聊 @机器人发消息，查看控制台日志与自动回复。
+
+需要我把上述代码封装成可直接运行的完整项目（含依赖清单、配置文件与启动脚本），你只需替换 App ID/Secret 即可部署吗？

@@ -90,6 +90,19 @@ impl ChannelManager {
             .await
             .ok_or_else(|| anyhow::anyhow!("Channel '{}' not found", channel_name))?;
 
+        // Load auth data and set it to the connector
+        if let Some(auth) = self.auth_storage.get_channel(channel_name).await {
+            // Try to set config on Feishu connector
+            #[cfg(feature = "feishu")]
+            {
+                if channel_name == "feishu" {
+                    if let Some(feishu) = connector.as_any().downcast_ref::<crate::feishu::FeishuConnector>() {
+                        let _ = feishu.set_config_from_auth(&auth).await;
+                    }
+                }
+            }
+        }
+
         // Get message bus
         let bus = self
             .message_bus

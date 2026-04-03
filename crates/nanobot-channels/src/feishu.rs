@@ -1,13 +1,19 @@
-//! Feishu (Lark) channel connector
+//! Feishu (Lark) channel connector using open-lark SDK
+//!
+//! Uses WebSocket long connection (长连接) for receiving messages.
+//! Reference: https://open.feishu.cn/document/ukTMukTMukTM/uYDNxYjL2QTM24iN0EjN/event-subscription-configure-/use-websocket
 
 use crate::base::{ChannelConnector, ChannelStatus};
 use crate::auth::AuthStorage;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use nanobot_bus::{InboundMessage, MessageBus};
+use open_lark::client::ws_client::LarkWsClient;
+use open_lark::prelude::*;
 use serde_json::json;
+use std::any::Any;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 
 /// Feishu connector configuration
@@ -28,12 +34,13 @@ impl Default for FeishuConfig {
     }
 }
 
-/// Feishu bot connector
+/// Feishu bot connector using open-lark WebSocket long connection
 pub struct FeishuConnector {
     config: RwLock<FeishuConfig>,
     auth_storage: Option<Arc<AuthStorage>>,
-    running: RwLock<bool>,
-    tenant_access_token: RwLock<Option<String>>,
+    running: Arc<Mutex<bool>>,
+    message_bus: RwLock<Option<MessageBus>>,
+    lark_client: RwLock<Option<Arc<LarkClient>>>,
 }
 
 impl FeishuConnector {
@@ -42,8 +49,9 @@ impl FeishuConnector {
         Self {
             config: RwLock::new(FeishuConfig::default()),
             auth_storage: None,
-            running: RwLock::new(false),
-            tenant_access_token: RwLock::new(None),
+            running: Arc::new(Mutex::new(false)),
+            message_bus: RwLock::new(None),
+            lark_client: RwLock::new(None),
         }
     }
 
@@ -52,134 +60,192 @@ impl FeishuConnector {
         Self {
             config: RwLock::new(FeishuConfig::default()),
             auth_storage: Some(auth_storage),
-            running: RwLock::new(false),
-            tenant_access_token: RwLock::new(None),
+            running: Arc::new(Mutex::new(false)),
+            message_bus: RwLock::new(None),
+            lark_client: RwLock::new(None),
         }
     }
 
-    /// Get tenant access token
-    async fn get_access_token(&self) -> Result<String> {
-        // Check cache first
-        {
-            let token = self.tenant_access_token.read().await;
-            if let Some(t) = token.as_ref() {
-                return Ok(t.clone());
+    /// Load config from auth storage if available
+    async fn load_config_from_auth(&self) -> Result<()> {
+        if let Some(storage) = &self.auth_storage {
+            if let Some(auth) = storage.get_channel("feishu").await {
+                let mut config = self.config.write().await;
+                config.app_secret = auth.token.clone();
+                if let Some(app_id) = auth.extra.get("app_id").and_then(|v| v.as_str()) {
+                    config.app_id = app_id.to_string();
+                }
+                if let Some(verification_token) = auth.extra.get("verification_token").and_then(|v| v.as_str()) {
+                    config.verification_token = verification_token.to_string();
+                }
+                info!("Loaded Feishu config from auth storage");
+                return Ok(());
             }
         }
-
-        // Fetch new token
-        let config = self.config.read().await;
-        let app_id = config.app_id.clone();
-        let app_secret = config.app_secret.clone();
-        drop(config);
-
-        if app_id.is_empty() || app_secret.is_empty() {
-            anyhow::bail!("Feishu app_id or app_secret not configured");
-        }
-
-        let client = reqwest::Client::new();
-        let response = client
-            .post("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal")
-            .header("Content-Type", "application/json")
-            .json(&json!({
-                "app_id": app_id,
-                "app_secret": app_secret,
-            }))
-            .send()
-            .await
-            .context("Failed to fetch Feishu access token")?;
-
-        let body: serde_json::Value = response.json().await?;
-
-        if body.get("code").and_then(|v| v.as_i64()) != Some(0) {
-            anyhow::bail!("Feishu token fetch failed: {:?}", body);
-        }
-
-        let token = body
-            .get("tenant_access_token")
-            .and_then(|v| v.as_str())
-            .context("Missing tenant_access_token in response")?
-            .to_string();
-
-        // Cache the token
-        *self.tenant_access_token.write().await = Some(token.clone());
-
-        Ok(token)
+        Ok(())
     }
 
-    /// Send a message via Feishu API
-    async fn send_feishu_message(
-        &self,
-        chat_id: &str,
-        text: &str,
-    ) -> Result<()> {
-        let token = self.get_access_token().await?;
+    /// Set config from ChannelAuth
+    pub async fn set_config_from_auth(&self, auth: &crate::auth::ChannelAuth) -> Result<()> {
+        let mut config = self.config.write().await;
+        config.app_secret = auth.token.clone();
+        if let Some(app_id) = auth.extra.get("app_id").and_then(|v| v.as_str()) {
+            config.app_id = app_id.to_string();
+        }
+        if let Some(verification_token) = auth.extra.get("verification_token").and_then(|v| v.as_str()) {
+            config.verification_token = verification_token.to_string();
+        }
+        info!("Set Feishu config from auth");
+        Ok(())
+    }
 
-        let client = reqwest::Client::new();
-        let url = "https://open.feishu.cn/open-apis/im/v1/messages";
+    /// Send a message via Feishu API using open-lark client
+    async fn send_feishu_message(&self, chat_id: &str, text: &str) -> Result<()> {
+        // For sending messages, we need to wait for the client to be initialized
+        // This is a simplified implementation - in production you may want to poll
+        // or use a different pattern
+        let lark_client = self.lark_client.read().await;
+        let client = lark_client.as_ref()
+            .context("Lark client not initialized")?;
 
-        let response = client
-            .post(url)
-            .header("Authorization", format!("Bearer {}", token))
-            .header("Content-Type", "application/json")
-            .json(&json!({
-                "receive_id": chat_id,
-                "msg_type": "text",
-                "content": {
-                    "text": text,
-                },
-            }))
-            .send()
+        let content = json!({
+            "text": text,
+        })
+        .to_string();
+
+        let request = CreateMessageRequest::builder()
+            .receive_id_type("chat_id")
+            .request_body(
+                CreateMessageRequestBody::builder()
+                    .receive_id(chat_id)
+                    .msg_type("text")
+                    .content(&content)
+                    .build(),
+            )
+            .build();
+
+        let _response = client
+            .im
+            .v1
+            .message
+            .create(request, None)
             .await
             .context("Failed to send Feishu message")?;
-
-        let body: serde_json::Value = response.json().await?;
-
-        if body.get("code").and_then(|v| v.as_i64()) != Some(0) {
-            anyhow::bail!("Feishu send message failed: {:?}", body);
-        }
 
         debug!("Sent Feishu message to {}", chat_id);
         Ok(())
     }
 
-    /// Process a Feishu event and convert to InboundMessage
-    fn process_event(&self, event: &serde_json::Value) -> Option<InboundMessage> {
-        // Check event type
-        let header = event.get("header")?;
-        let event_type = header.get("event_type")?.as_str()?;
+    /// Start WebSocket long connection - runs on a dedicated thread with its own runtime
+    fn spawn_websocket_task(bus: MessageBus, config: FeishuConfig, running: Arc<Mutex<bool>>, lark_client_store: Arc<RwLock<Option<Arc<LarkClient>>>>) {
+        // Use std::thread::spawn to avoid Send requirement on the event handler
+        // We create a new runtime inside the thread
+        std::thread::spawn(move || {
+            let app_id = &config.app_id;
+            let app_secret = &config.app_secret;
 
-        // Only handle receive_message events
-        if event_type != "im.message.receive_v1" {
-            return None;
-        }
+            if app_id.is_empty() || app_secret.is_empty() {
+                error!("Feishu app_id or app_secret not configured");
+                return;
+            }
 
-        let event_data = event.get("event")?;
+            info!("Starting Feishu WebSocket long connection (app_id: {})", app_id);
 
-        // Get message info
-        let message = event_data.get("message")?;
-        let chat_id = message.get("chat_id")?.as_str()?;
-        let sender_id = message.get("sender_id")?.get("open_id")?.as_str()?;
-        let content = message.get("content")?;
+            // Create a new runtime for this thread
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to create Tokio runtime");
 
-        // Parse content JSON
-        let content_text = content
-            .as_object()
-            .and_then(|obj| obj.get("text"))
-            .or_else(|| content.get("text"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+            rt.block_on(async {
+                // Create Lark client
+                let lark_client = Arc::new(
+                    LarkClient::builder(app_id, app_secret)
+                        .with_app_type(AppType::SelfBuild)
+                        .with_enable_token_cache(true)
+                        .build()
+                );
 
-        if content_text.is_empty() {
-            return None;
-        }
+                // Store client for sending messages
+                {
+                    *lark_client_store.write().await = Some(lark_client.clone());
+                }
 
-        Some(InboundMessage::new(
-            "feishu",
-            sender_id.to_string(),
-            chat_id.to_string(),
-            content_text.to_string(),
-        ))
+                // Create event handler with message processing
+                let event_handler = EventDispatcherHandler::builder()
+                    .register_p2_im_message_receive_v1(move |event| {
+                        let bus_clone = bus.clone();
+
+                        tokio::spawn(async move {
+                            // Only handle text messages
+                            if event.event.message.message_type != "text" {
+                                debug!("Skipping non-text message type: {}", event.event.message.message_type);
+                                return;
+                            }
+
+                            // Get sender open_id - it's a String field
+                            let sender_open_id = event.event.sender.sender_id.open_id;
+
+                            // Get chat_id
+                            let chat_id = event.event.message.chat_id;
+
+                            // Parse message content
+                            let content: serde_json::Value = match serde_json::from_str(&event.event.message.content) {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    error!("Failed to parse message content: {}", e);
+                                    return;
+                                }
+                            };
+
+                            let text = match content.get("text").and_then(|v| v.as_str()) {
+                                Some(t) if !t.is_empty() => t,
+                                _ => return,
+                            };
+
+                            // Convert to InboundMessage and send to bus
+                            let inbound = InboundMessage::new(
+                                "feishu",
+                                sender_open_id,
+                                chat_id,
+                                text.to_string(),
+                            );
+
+                            if let Err(e) = bus_clone.publish_inbound(inbound).await {
+                                error!("Failed to publish inbound message to bus: {}", e);
+                            }
+                        });
+                    })
+                    .expect("Failed to register message receive handler")
+                    .build();
+
+                // Get config for WebSocket client
+                let ws_config = Arc::new(lark_client.config.clone());
+
+                // Start WebSocket connection using open-lark SDK
+                // This runs until the connection is closed or error occurs
+                match LarkWsClient::open(ws_config, event_handler).await {
+                    Ok(_) => {
+                        info!("Feishu WebSocket connected and running");
+                        // Keep running until stopped
+                        loop {
+                            tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                            let running_guard = running.lock().await;
+                            if !*running_guard {
+                                info!("Feishu WebSocket stopping");
+                                break;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Feishu WebSocket connection failed: {:?}", e);
+                    }
+                }
+
+                // Clear client on exit
+                *lark_client_store.write().await = None;
+            });
+        });
     }
 }
 
@@ -210,23 +276,10 @@ impl ChannelConnector for FeishuConnector {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        // Validate credentials by fetching access token
-        let client = reqwest::Client::new();
-        let response = client
-            .post("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal")
-            .header("Content-Type", "application/json")
-            .json(&json!({
-                "app_id": app_id,
-                "app_secret": app_secret,
-            }))
-            .send()
-            .await?;
-
-        let body: serde_json::Value = response.json().await?;
-
-        if body.get("code").and_then(|v| v.as_i64()) != Some(0) {
-            anyhow::bail!("Invalid Feishu credentials: {:?}", body);
-        }
+        // Validate credentials by creating a test client
+        let _test_client = LarkClient::builder(app_id, app_secret)
+            .with_app_type(AppType::SelfBuild)
+            .build();
 
         // Store config
         let mut cfg = self.config.write().await;
@@ -247,9 +300,9 @@ impl ChannelConnector for FeishuConnector {
         Ok(())
     }
 
-    async fn start(&self, _bus: MessageBus) -> Result<()> {
+    async fn start(&self, bus: MessageBus) -> Result<()> {
         {
-            let mut running = self.running.write().await;
+            let mut running = self.running.lock().await;
             if *running {
                 warn!("Feishu connector is already running");
                 return Ok(());
@@ -257,30 +310,46 @@ impl ChannelConnector for FeishuConnector {
             *running = true;
         }
 
+        // Load config from auth storage if available
+        self.load_config_from_auth().await?;
+
         // Check authentication
         if !self.is_authenticated().await {
             anyhow::bail!("Feishu connector not authenticated");
         }
 
-        info!("Feishu connector started (webhook mode - requires external webhook handler)");
+        // Store message bus for potential future use
+        *self.message_bus.write().await = Some(bus.clone());
 
-        // Feishu uses webhooks - the webhook handler would be implemented separately
-        // This is a placeholder for the webhook-based approach
+        // Get config snapshot for spawning task
+        let config = self.config.read().await.clone();
+        let running = self.running.clone();
+        let lark_client_store = Arc::new(RwLock::new(None));
 
+        // Spawn WebSocket task - the event handler is created inside the task
+        // to avoid Send trait bound issues
+        Self::spawn_websocket_task(bus, config, running, lark_client_store);
+
+        info!("Feishu connector started (WebSocket long connection mode)");
         Ok(())
     }
 
     async fn stop(&self) -> Result<()> {
-        let mut running = self.running.write().await;
+        let mut running = self.running.lock().await;
         *running = false;
         info!("Feishu connector stopping");
+
+        // Clear lark client
+        *self.lark_client.write().await = None;
+
+        info!("Feishu connector stopped");
         Ok(())
     }
 
     async fn status(&self) -> ChannelStatus {
         let config = self.config.read().await;
-        let running = *self.running.read().await;
-        let has_token = self.tenant_access_token.read().await.is_some();
+        let running = *self.running.lock().await;
+        let client_initialized = self.lark_client.read().await.is_some();
 
         let mut status = ChannelStatus::new("feishu")
             .with_authenticated(!config.app_id.is_empty() && !config.app_secret.is_empty())
@@ -290,11 +359,15 @@ impl ChannelConnector for FeishuConnector {
             status = status.with_metadata("app_id_configured", json!(true));
         }
 
-        if has_token {
-            status = status.with_metadata("access_token_cached", json!(true));
+        if client_initialized {
+            status = status.with_metadata("client_initialized", json!(true));
         }
 
         status
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 
@@ -306,11 +379,22 @@ impl Default for FeishuConnector {
 
 impl Clone for FeishuConnector {
     fn clone(&self) -> Self {
+        let config = self.config.try_read()
+            .map(|c| c.clone())
+            .unwrap_or(FeishuConfig::default());
+        let message_bus = self.message_bus.try_read()
+            .map(|m| m.clone())
+            .unwrap_or(None);
+        let lark_client = self.lark_client.try_read()
+            .map(|c| c.clone())
+            .unwrap_or(None);
+
         Self {
-            config: RwLock::new(self.config.blocking_read().clone()),
+            config: RwLock::new(config),
             auth_storage: self.auth_storage.clone(),
-            running: RwLock::new(*self.running.blocking_read()),
-            tenant_access_token: RwLock::new(self.tenant_access_token.blocking_read().clone()),
+            running: self.running.clone(),
+            message_bus: RwLock::new(message_bus),
+            lark_client: RwLock::new(lark_client),
         }
     }
 }

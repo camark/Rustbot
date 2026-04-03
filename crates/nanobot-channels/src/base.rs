@@ -4,6 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use nanobot_bus::MessageBus;
 use serde::{Deserialize, Serialize};
+use std::any::Any;
 
 /// Channel connector trait - all channels must implement this
 #[async_trait]
@@ -25,6 +26,9 @@ pub trait ChannelConnector: Send + Sync {
 
     /// Get channel status
     async fn status(&self) -> ChannelStatus;
+
+    /// Cast to Any for downcasting
+    fn as_any(&self) -> &dyn Any;
 }
 
 /// Channel status information

@@ -38,8 +38,11 @@ nanobot-config = { workspace = true }
 teloxide = { version = "0.12", features = ["macros"], optional = true }
 serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "rustls_backend", "builder"], optional = true }
 
+# Feishu/OpenLark SDK for WebSocket long connection
+open-lark = { version = "0.14", features = ["websocket", "bot", "im"], optional = true }
+
 [features]
-default = ["telegram", "discord"]
+default = ["telegram", "discord", "feishu"]
 telegram = ["dep:teloxide"]
 discord = ["dep:serenity"]
-feishu = []
+feishu = ["dep:open-lark"]

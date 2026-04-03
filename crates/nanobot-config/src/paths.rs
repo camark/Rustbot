@@ -4,7 +4,22 @@ use std::path::{Path, PathBuf};
 
 /// Get the base configuration directory (~/.nanobot)
 pub fn get_config_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".nanobot"))
+    // On Windows, prefer USERPROFILE environment variable over dirs::home_dir()
+    // to avoid issues with git-bash returning C:/ instead of C:/Users/<user>
+    #[cfg(windows)]
+    {
+        // Always use USERPROFILE on Windows for consistency
+        if let Ok(userprofile) = std::env::var("USERPROFILE") {
+            return Some(PathBuf::from(userprofile).join(".nanobot"));
+        }
+        // Fallback to dirs::home_dir()
+        dirs::home_dir().map(|home| home.join(".nanobot"))
+    }
+
+    #[cfg(not(windows))]
+    {
+        dirs::home_dir().map(|home| home.join(".nanobot"))
+    }
 }
 
 /// Get the workspace directory (~/.nanobot/workspace)

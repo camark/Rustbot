@@ -242,7 +242,7 @@ impl AgentLoop {
 
         loop {
             // Handle the current response
-            self.handle_response(&msg, &mut session_handle, current_response)?;
+            self.handle_response(&msg, &mut session_handle, current_response).await?;
 
             // If there are tool calls, execute them and get another response
             if self.tools.has(&msg.content) || /* check for tool calls in session */
@@ -285,17 +285,21 @@ impl AgentLoop {
     }
 
     /// Handle LLM response
-    fn handle_response(
+    async fn handle_response(
         &self,
         msg: &InboundMessage,
         session: &mut crate::session::SessionHandle,
         response: LLMResponse,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Save assistant message
-        let assistant_msg = serde_json::json!({
+        let mut assistant_msg = serde_json::json!({
             "role": "assistant",
             "content": response.content,
-            "tool_calls": response.tool_calls.iter().map(|tc| {
+        });
+
+        // Only include tool_calls if there are any (some providers reject empty arrays)
+        if !response.tool_calls.is_empty() {
+            let tool_calls: Vec<_> = response.tool_calls.iter().map(|tc| {
                 serde_json::json!({
                     "id": tc.id,
                     "type": "function",
@@ -304,18 +308,17 @@ impl AgentLoop {
                         "arguments": tc.arguments,
                     }
                 })
-            }).collect::<Vec<_>>(),
-        });
+            }).collect();
+            assistant_msg["tool_calls"] = serde_json::json!(tool_calls);
+        }
+
         session.add_message(assistant_msg);
 
         // Send response to channel
         if let Some(content) = &response.content {
             if !content.is_empty() {
                 let outbound = OutboundMessage::new(&msg.channel, &msg.chat_id, content);
-                // Block on the future since we're in an async context
-                tokio::runtime::Handle::current().block_on(async {
-                    self.bus.publish_outbound(outbound).await
-                })?;
+                self.bus.publish_outbound(outbound).await?;
             }
         }
 

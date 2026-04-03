@@ -106,5 +106,9 @@ pub fn create_default_registry() -> Arc<ChannelRegistry> {
         });
     }
 
+    // Give spawned tasks time to complete registration
+    // This is a workaround for the async registration issue
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
     registry
 }

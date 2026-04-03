@@ -285,7 +285,6 @@ pub struct DiscordConfig {
 
 /// Feishu (Lark) channel configuration
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
-#[serde(rename_all = "camelCase")]
 pub struct FeishuConfig {
     /// App ID from Feishu developer console
     #[serde(default)]
@@ -302,7 +301,6 @@ pub struct FeishuConfig {
 
 /// Channel configuration root
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
-#[serde(rename_all = "camelCase")]
 pub struct ChannelsConfig {
     /// Send progress updates to channels
     #[serde(default = "default_true")]
@@ -659,9 +657,10 @@ impl Config {
     pub fn workspace_path(&self) -> PathBuf {
         let path = &self.agents.defaults.workspace;
         if path.starts_with('~') {
-            dirs::home_dir()
-                .map(|home| home.join(path.trim_start_matches('~')))
-                .unwrap_or_else(|| PathBuf::from(path))
+            // Use get_config_dir() which handles Windows USERPROFILE correctly
+            crate::get_config_dir()
+                .map(|config_dir| config_dir.join("workspace"))
+                .unwrap_or_else(|| PathBuf::from(path.trim_start_matches('~')))
         } else {
             PathBuf::from(path)
         }

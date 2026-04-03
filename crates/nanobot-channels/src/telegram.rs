@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use nanobot_bus::{InboundMessage, MessageBus};
 use serde_json::json;
+use std::any::Any;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
@@ -317,6 +318,10 @@ impl ChannelConnector for TelegramConnector {
         }
 
         status
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 

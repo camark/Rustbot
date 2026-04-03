@@ -151,8 +151,10 @@ impl SessionManager {
 
         // Try to load from disk
         if let Some(session) = self.load_session(&key) {
-            let mut sessions = self.sessions.lock();
-            sessions.insert(key.clone(), session.clone());
+            {
+                let mut sessions = self.sessions.lock();
+                sessions.insert(key.clone(), session.clone());
+            } // Lock dropped here
             return SessionHandle::new(session, self.clone(), key);
         }
 

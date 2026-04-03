@@ -108,13 +108,38 @@ pub async fn run(
 
 async fn run_single_message(agent_loop: &AgentLoop, message: &str) -> Result<()> {
     // For single message, we need to publish to bus and wait for response
-    // This is a simplified version - in practice we'd use a direct API
     println!("Processing: {}", message);
 
-    // TODO: Implement direct message processing
-    // For now, just show a placeholder
-    println!("\n[Single message processing will be implemented in Phase 2]");
-    println!("Response would appear here after LLM processes the message.");
+    // Start agent loop in background
+    let agent_clone = agent_loop.clone();
+    let bus = agent_loop.bus().clone();
+
+    tokio::spawn(async move {
+        let _ = agent_clone.run().await;
+    });
+
+    // Publish message
+    let msg = nanobot_bus::InboundMessage::new("cli", "user", "direct", message);
+    bus.publish_inbound(msg).await?;
+
+    // Wait for response with timeout
+    match tokio::time::timeout(
+        tokio::time::Duration::from_secs(60),
+        bus.consume_outbound()
+    ).await {
+        Ok(Ok(outbound)) => {
+            println!("\n{}", outbound.content);
+        }
+        Ok(Err(_)) => {
+            println!("\nError: No response from agent");
+        }
+        Err(_) => {
+            println!("\nError: Request timeout");
+        }
+    }
+
+    // Stop agent loop
+    agent_loop.stop().await;
 
     Ok(())
 }
@@ -137,7 +162,6 @@ async fn run_interactive(agent_loop: &AgentLoop, logs: bool) -> Result<()> {
 
     // Start agent loop in background
     let agent_clone = agent_loop.clone();
-    let bus = agent_loop.bus().clone();
     tokio::spawn(async move {
         let _ = agent_clone.run().await;
     });
@@ -176,10 +200,23 @@ async fn run_interactive(agent_loop: &AgentLoop, logs: bool) -> Result<()> {
 
         // Publish message to bus
         let msg = nanobot_bus::InboundMessage::new("cli", "user", "direct", input);
-        let _ = bus.publish_inbound(msg).await;
+        let _ = agent_loop.bus().publish_inbound(msg).await;
 
-        // For now, just echo - actual response handling in Phase 2
-        println!("[Message sent to agent - response handling in Phase 2]");
+        // Wait for response with timeout
+        match tokio::time::timeout(
+            tokio::time::Duration::from_secs(120),
+            agent_loop.bus().consume_outbound()
+        ).await {
+            Ok(Ok(outbound)) => {
+                println!("\n{}", outbound.content);
+            }
+            Ok(Err(_)) => {
+                println!("Error: No response from agent");
+            }
+            Err(_) => {
+                println!("Error: Request timeout");
+            }
+        }
     }
 
     // Stop agent loop
