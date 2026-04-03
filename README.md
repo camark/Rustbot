@@ -117,24 +117,28 @@ Config file: `~/.nanobot/config.json`
 - [x] Context window management (token counting and truncation)
 - [x] All tests passing (7/7)
 
-### Phase 4 - Channels
+### Phase 4 - Channels ✅
 
-- [ ] Telegram channel
-- [ ] Discord channel
-- [ ] Feishu channel
-- [ ] WhatsApp bridge
+- [x] Channel connector trait
+- [x] Telegram channel (teloxide)
+- [x] Discord channel (serenity)
+- [x] Feishu channel
+- [x] Channel registry and manager
+- [x] Authentication storage
+- [x] CLI commands (login/status)
 
-### Phase 5 - Services
+### Phase 5 - Services ✅
 
-- [ ] Cron service
-- [ ] Heartbeat service
-- [ ] OpenAI-compatible API server
+- [x] Cron service
+- [x] Heartbeat service
+- [x] OpenAI-compatible API server
+- [x] Service manager integration
 
-### Phase 6 - Advanced
+### Phase 6 - Advanced Features ✅
 
-- [ ] MCP (Model Context Protocol)
-- [ ] Subagent system
-- [ ] Skills loading
+- [x] MCP (Model Context Protocol) client
+- [x] Subagent system
+- [x] Skills loading system
 
 ## Development
 

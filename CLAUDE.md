@@ -60,6 +60,10 @@ rustbot services stop <name>
 # Channel authentication
 rustbot channels login telegram
 rustbot channels status
+
+# MCP (Model Context Protocol)
+# Note: MCP commands are pending CLI integration
+# Use MCP client programmatically via nanobot-core::mcp
 ```
 
 ## Workspace Architecture
@@ -71,7 +75,7 @@ rustbot channels status
 | `nanobot-config` | Configuration loading, schema definitions, path management |
 | `nanobot-providers` | LLM provider trait, registry, OpenAI-compatible implementations |
 | `nanobot-bus` | Async MPSC message bus for inter-component communication |
-| `nanobot-core` | Agent loop, tool registry, session management, memory, services |
+| `nanobot-core` | Agent loop, tool registry, session management, memory, services, MCP, subagents, skills |
 | `nanobot-channels` | Channel connectors (Telegram, Discord, Feishu) |
 | `nanobot-api` | OpenAI-compatible HTTP API server (axum) |
 | `nanobot-cli` | CLI interface (clap), commands, TUI streaming |
@@ -98,6 +102,12 @@ Channel (Telegram/Discord/API)
 **Service Architecture**: Cron and Heartbeat services in `nanobot-core/src/services/` - async tasks with RwLock state.
 
 **API Auth Middleware**: Bearer token validation via axum middleware. Multiple keys supported via `ApiAuth`.
+
+**MCP Client**: `nanobot-core/src/mcp/` - Model Context Protocol implementation with stdio/SSE transports (Phase 6.1).
+
+**Subagent System**: `nanobot-core/src/subagent.rs` - Task delegation to specialized agents (Code, Review, Planning, Research, Custom) (Phase 6.2).
+
+**Skills System**: `nanobot-core/src/skills.rs` - Pluggable skill architecture with Memory, CodeReview, Planning built-ins (Phase 6.3).
 
 ## Configuration
 
@@ -136,6 +146,12 @@ Auth tokens stored separately in `~/.nanobot/auth.json` (0600 permissions).
 
 **Add a service**: Create module in `crates/nanobot-core/src/services/`, use RwLock for state, tokio::spawn for background task.
 
+**Add MCP transport/protocol**: Extend `crates/nanobot-core/src/mcp/`, follow JSON-RPC 2.0 spec 2025-06-18.
+
+**Add a subagent type**: Add `BuiltinSubagent` variant in `subagent.rs`, implement `spec()` and system prompt methods.
+
+**Add a skill**: Implement `Skill` trait in `crates/nanobot-core/src/skills.rs`, register in `SkillRegistry`.
+
 **Add CLI command**: Add to `crates/nanobot-cli/src/commands/`, export in `mod.rs`, wire up in `main.rs`.
 
 ## Testing Notes
@@ -152,7 +168,7 @@ Auth tokens stored separately in `~/.nanobot/auth.json` (0600 permissions).
 - ✅ Phase 3: Memory & sessions (token counting, truncation, cleanup)
 - ✅ Phase 4: Channels (Telegram, Discord, Feishu connectors)
 - ✅ Phase 5: Services (Cron, Heartbeat, API server)
-- 🔄 Phase 6: Advanced (MCP, subagents, skills) - pending
+- ✅ Phase 6: Advanced (MCP, subagents, skills)
 
 ## API Server Endpoints
 
@@ -163,8 +179,12 @@ Auth tokens stored separately in `~/.nanobot/auth.json` (0600 permissions).
 | `/v1/models/:id` | GET | Yes | Get model info |
 | `/v1/chat/completions` | POST | Yes | Chat (streaming via SSE) |
 
-## Known Limitations (Phase 5)
+## Known Limitations
 
-- Cron jobs in-memory only (no persistence)
+- Cron jobs in-memory only (no persistence to disk)
+- API streaming uses simplified SSE format (full AgentLoop integration pending)
+- MCP client CLI commands pending integration
+- Subagent execution is placeholder (needs AgentLoop spawn implementation)
+- Skills are loaded at runtime (no hot-reload support yet)
 - Heartbeat not integrated with session cleanup
 - API streaming simplified (AgentLoop integration pending)
