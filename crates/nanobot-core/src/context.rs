@@ -88,6 +88,18 @@ Your capabilities:
 - Search and fetch web content
 - Use tools provided to you
 
+File path handling:
+- When users mention "桌面" or "desktop", use the path "~/Desktop" or the full path from the working directory context
+- When users mention "文档" or "documents", use "~/Documents"
+- When users mention "下载" or "downloads", use "~/Downloads"
+- Use the list_dir tool to list directory contents, then filter results based on user's request (e.g., filter by file extension for specific file types)
+- For listing PDF files, call list_dir with the desktop path, then filter the results to show only .pdf files
+
+Multi-step tasks:
+- For tasks like "read the first X file", first use list_dir to find files, then use read_file to read the content
+- Always complete all necessary tool calls before giving your final answer
+- If you need to find a specific file before reading it, use list_dir first with an appropriate pattern
+
 Guidelines:
 - Be helpful, harmless, and honest
 - Admit when you don't know something
@@ -96,6 +108,34 @@ Guidelines:
 - Show your reasoning for complex problems
 
 You are currently running in CLI mode. Respond naturally to user messages."#.to_string()
+    }
+
+    /// Build messages from history only (used after tool execution)
+    pub fn build_messages_from_history(
+        &self,
+        history: Vec<serde_json::Value>,
+    ) -> Vec<serde_json::Value> {
+        let mut messages = Vec::with_capacity(history.len() + 2);
+
+        // System message with runtime context
+        messages.push(serde_json::json!({
+            "role": "system",
+            "content": self.build_system_prompt(),
+        }));
+
+        // Add runtime context as user message
+        let runtime_context = self.build_runtime_context();
+        messages.push(serde_json::json!({
+            "role": "user",
+            "content": runtime_context,
+        }));
+
+        // Add conversation history (including tool responses)
+        for msg in history {
+            messages.push(msg);
+        }
+
+        messages
     }
 
     /// Build messages with media support

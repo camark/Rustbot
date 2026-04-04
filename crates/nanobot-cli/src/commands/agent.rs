@@ -92,6 +92,7 @@ pub async fn run(
 
     // Create agent loop
     let agent_loop = AgentLoop::new(bus, Arc::from(provider), agent_config)
+        .await
         .context("Failed to create agent loop")?;
 
     // Handle message or interactive mode

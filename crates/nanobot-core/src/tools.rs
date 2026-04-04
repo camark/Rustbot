@@ -7,6 +7,7 @@ pub mod web;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
+use tokio::sync::Mutex;
 
 pub use shell::{ShellTool, ShellToolConfig};
 pub use fs::{ReadFileTool, WriteFileTool, EditFileTool, ListDirTool};
@@ -71,45 +72,45 @@ pub trait Tool: Send + Sync {
 
 /// Tool registry
 pub struct ToolRegistry {
-    tools: parking_lot::Mutex<HashMap<String, Box<dyn Tool>>>,
+    tools: Mutex<HashMap<String, Box<dyn Tool>>>,
 }
 
 impl ToolRegistry {
     /// Create a new tool registry
     pub fn new() -> Self {
         Self {
-            tools: parking_lot::Mutex::new(HashMap::new()),
+            tools: Mutex::new(HashMap::new()),
         }
     }
 
     /// Register a tool
-    pub fn register(&self, tool: Box<dyn Tool>) {
+    pub async fn register(&self, tool: Box<dyn Tool>) {
         let name = tool.name().to_string();
-        let mut tools = self.tools.lock();
+        let mut tools = self.tools.lock().await;
         tools.insert(name, tool);
     }
 
     /// Unregister a tool
-    pub fn unregister(&self, name: &str) -> Option<Box<dyn Tool>> {
-        let mut tools = self.tools.lock();
+    pub async fn unregister(&self, name: &str) -> Option<Box<dyn Tool>> {
+        let mut tools = self.tools.lock().await;
         tools.remove(name)
     }
 
     /// Get a tool by name (returns tool name if exists)
-    pub fn contains(&self, name: &str) -> bool {
-        let tools = self.tools.lock();
+    pub async fn contains(&self, name: &str) -> bool {
+        let tools = self.tools.lock().await;
         tools.contains_key(name)
     }
 
     /// Check if a tool is registered
-    pub fn has(&self, name: &str) -> bool {
-        let tools = self.tools.lock();
+    pub async fn has(&self, name: &str) -> bool {
+        let tools = self.tools.lock().await;
         tools.contains_key(name)
     }
 
     /// Get all tool definitions
-    pub fn get_definitions(&self) -> Vec<Value> {
-        let tools = self.tools.lock();
+    pub async fn get_definitions(&self) -> Vec<Value> {
+        let tools = self.tools.lock().await;
         tools
             .values()
             .map(|tool| {
@@ -127,23 +128,35 @@ impl ToolRegistry {
 
     /// Execute a tool by name
     pub async fn execute(&self, name: &str, params: Value) -> ToolResult<Value> {
-        let tools = self.tools.lock();
+        // Get tool reference and validate params while holding lock
+        let validation_result = {
+            let tools = self.tools.lock().await;
+            let tool = tools
+                .get(name)
+                .ok_or_else(|| ToolError::NotFound(name.to_string()))?;
+
+            // Validate parameters
+            let errors = tool.validate_params(&params);
+            if !errors.is_empty() {
+                return Err(ToolError::InvalidParams(errors.join("; ")));
+            }
+            Ok(())
+        };
+
+        validation_result?;
+
+        // Re-acquire lock for execution (tool may need async operations)
+        let tools = self.tools.lock().await;
         let tool = tools
             .get(name)
             .ok_or_else(|| ToolError::NotFound(name.to_string()))?;
-
-        // Validate parameters
-        let errors = tool.validate_params(&params);
-        if !errors.is_empty() {
-            return Err(ToolError::InvalidParams(errors.join("; ")));
-        }
 
         tool.execute(params).await
     }
 
     /// Get list of registered tool names
-    pub fn tool_names(&self) -> Vec<String> {
-        let tools = self.tools.lock();
+    pub async fn tool_names(&self) -> Vec<String> {
+        let tools = self.tools.lock().await;
         tools.keys().cloned().collect()
     }
 }

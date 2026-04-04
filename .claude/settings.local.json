@@ -22,7 +22,24 @@
       "Bash(curl:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(taskkill /IM rustbot.exe)",
+      "Bash(Get-Process rustbot:*)",
+      "Bash(Stop-Process -Force)",
+      "Bash(Start-Sleep -Milliseconds 500)",
+      "Bash(pkill -f rustbot)",
+      "Bash(cmd //c taskkill //IM rustbot.exe //F)",
+      "Bash(taskkill //IM rustbot.exe //F)",
+      "Bash(tasklist)",
+      "Bash(findstr rustbot:*)",
+      "Bash(dir C:\\\\Users\\\\gongm\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--git-RustBot\\\\bb47a348-8c6b-47ff-90b2-a35a4251bc14\\\\tasks\\\\*.output)",
+      "Bash(ls -t \"/c/Users/gongm/AppData/Local/Temp/claude/C--git-RustBot/bb47a348-8c6b-47ff-90b2-a35a4251bc14/tasks/\"*.output)",
+      "Bash(xargs cat:*)",
+      "Bash(taskkill /FI \"WINDOWTITLE eq rustbot*\" /IM rustbot.exe)",
+      "Bash(del /q \"C:\\\\Users\\\\gongm\\\\.nanobot\\\\sessions\\\\*.json\")",
+      "Bash(rm:*)",
+      "Bash(taskkill //F //IM rustbot.exe)",
+      "Bash(findstr rustbot.exe)"
     ]
   }
 }

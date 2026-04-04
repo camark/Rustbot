@@ -81,6 +81,7 @@ pub async fn run(
         Arc::from(provider),
         agent_config,
     )
+    .await
     .context("Failed to create agent loop")?;
 
     // Spawn agent loop in background

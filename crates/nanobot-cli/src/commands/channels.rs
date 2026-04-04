@@ -328,7 +328,9 @@ pub async fn start(channel_name: String, config_path: Option<&str>) -> Result<()
         message_bus.clone(),
         Arc::from(provider),
         agent_config,
-    ).context("Failed to create agent loop")?;
+    )
+    .await
+    .context("Failed to create agent loop")?;
 
     let agent_loop = Arc::new(agent_loop);
 
