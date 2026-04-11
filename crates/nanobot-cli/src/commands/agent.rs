@@ -213,7 +213,7 @@ async fn run_interactive(agent_loop: &AgentLoop, logs: bool) -> Result<()> {
             Ok(Ok(outbound)) => {
                 // Normalize line endings for cross-platform consistency
                 let content = outbound.content.replace("\r\n", "\n").replace('\r', "\n");
-                println!("{}", content);
+                println!("\n{}", content);
             }
             Ok(Err(_)) => {
                 println!("Error: No response from agent");
