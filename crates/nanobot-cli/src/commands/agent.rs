@@ -129,7 +129,9 @@ async fn run_single_message(agent_loop: &AgentLoop, message: &str) -> Result<()>
         bus.consume_outbound()
     ).await {
         Ok(Ok(outbound)) => {
-            println!("{}", outbound.content);
+            // Normalize line endings for cross-platform consistency
+            let content = outbound.content.replace("\r\n", "\n").replace('\r', "\n");
+            println!("{}", content);
         }
         Ok(Err(_)) => {
             println!("Error: No response from agent");
@@ -209,7 +211,9 @@ async fn run_interactive(agent_loop: &AgentLoop, logs: bool) -> Result<()> {
             agent_loop.bus().consume_outbound()
         ).await {
             Ok(Ok(outbound)) => {
-                println!("{}", outbound.content);
+                // Normalize line endings for cross-platform consistency
+                let content = outbound.content.replace("\r\n", "\n").replace('\r', "\n");
+                println!("{}", content);
             }
             Ok(Err(_)) => {
                 println!("Error: No response from agent");
