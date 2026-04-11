@@ -275,6 +275,24 @@ impl AgentLoop {
             let has_tool_calls = current_response.has_tool_calls();
 
             if has_tool_calls {
+                // Save assistant message with tool calls to session FIRST
+                // (required for DeepSeek and other providers that validate tool call sequences)
+                let assistant_msg_with_tool_calls = serde_json::json!({
+                    "role": "assistant",
+                    "content": current_response.content,
+                    "tool_calls": current_response.tool_calls.iter().map(|tc| {
+                        serde_json::json!({
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": tc.arguments,
+                            }
+                        })
+                    }).collect::<Vec<_>>(),
+                });
+                session_handle.add_message(assistant_msg_with_tool_calls);
+
                 // Execute tool calls and get tool results
                 info!("Dispatch: detected {} tool calls, executing...", current_response.tool_calls.len());
                 let tool_response = self.execute_tool_calls(&msg, &mut session_handle, &current_response.tool_calls).await?;
