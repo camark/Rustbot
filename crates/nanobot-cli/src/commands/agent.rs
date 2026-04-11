@@ -169,6 +169,10 @@ async fn run_interactive(agent_loop: &AgentLoop, logs: bool) -> Result<()> {
         let _ = agent_clone.run().await;
     });
 
+    // Small delay to let agent loop initialize and output startup logs
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    println!();
+
     loop {
         print!("> ");
         let _ = std::io::stdout().flush();
@@ -182,10 +186,10 @@ async fn run_interactive(agent_loop: &AgentLoop, logs: bool) -> Result<()> {
             break;
         }
 
-        // Move to next line after user input
-        println!();
-
         let input = input.trim();
+
+        // Print empty line after input for separation (input already echoed by terminal)
+        println!();
 
         if input.is_empty() {
             continue;
