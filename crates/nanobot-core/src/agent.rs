@@ -3,18 +3,21 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use nanobot_bus::{InboundMessage, MessageBus, OutboundMessage};
 use nanobot_config::Config;
-use nanobot_providers::{LLMProvider, LLMResponse, Message, ToolDefinition};
+use nanobot_providers::{LLMProvider, LLMResponse, Message};
 
 use crate::context::ContextBuilder;
 use crate::hooks::AgentHook;
 use crate::memory::MemoryManager;
-use crate::session::{Session, SessionManager};
+use crate::mcp::client::{McpClient, McpClientConfig};
+use crate::mcp::tools::McpToolIntegration;
+use crate::session::SessionManager;
+use crate::skills::{SkillRegistry, SkillInput};
 use crate::tools::ToolRegistry;
-use nanobot_config::ToolsConfig;
+use nanobot_config::{McpServerConfig, ToolsConfig};
 
 /// Agent loop configuration
 pub struct AgentLoopConfig {
@@ -24,6 +27,22 @@ pub struct AgentLoopConfig {
     pub context_window_tokens: u32,
     pub timezone: String,
     pub tools_config: Option<ToolsConfig>,
+    pub skills_enabled: bool,
+}
+
+impl AgentLoopConfig {
+    /// Create config from full Config
+    pub fn from_full_config(config: &Config, model: Option<String>) -> Self {
+        Self {
+            workspace: config.workspace_path(),
+            model: model.unwrap_or_else(|| config.agents.defaults.model.clone()),
+            max_iterations: config.agents.defaults.max_tool_iterations as usize,
+            context_window_tokens: config.agents.defaults.context_window_tokens,
+            timezone: config.agents.defaults.timezone.clone(),
+            tools_config: Some(config.tools.clone()),
+            skills_enabled: config.skills.enabled,
+        }
+    }
 }
 
 impl Default for AgentLoopConfig {
@@ -37,6 +56,7 @@ impl Default for AgentLoopConfig {
             context_window_tokens: 65_536,
             timezone: "UTC".to_string(),
             tools_config: None,
+            skills_enabled: false,
         }
     }
 }
@@ -50,10 +70,14 @@ pub struct AgentLoop {
     max_iterations: usize,
     context_window_tokens: u32,
     tools: Arc<ToolRegistry>,
+    skills: Option<Arc<SkillRegistry>>,
     sessions: Arc<SessionManager>,
     context: Arc<ContextBuilder>,
     hooks: Arc<RwLock<Vec<Box<dyn AgentHook>>>>,
     running: Arc<RwLock<bool>>,
+    /// MCP clients and tool integrations
+    mcp_clients: Vec<Arc<McpClient>>,
+    mcp_integrations: Vec<Arc<McpToolIntegration>>,
 }
 
 impl AgentLoop {
@@ -67,6 +91,22 @@ impl AgentLoop {
         let context = ContextBuilder::new(&config.workspace, &config.timezone);
         let tools = ToolRegistry::new();
 
+        // Initialize skills if enabled
+        let skills = if config.skills_enabled {
+            let registry = SkillRegistry::with_builtins().await;
+            // Load user skills from ~/.nanobot/skills/
+            let skills_dir = config.workspace.join("skills");
+            if let Err(e) = registry.load_user_skills(&skills_dir).await {
+                warn!("Failed to load user skills: {}", e);
+            }
+            Some(Arc::new(registry))
+        } else {
+            None
+        };
+
+        // Initialize MCP clients if configured
+        let (mcp_clients, mcp_integrations) = Self::initialize_mcp_clients(&config.tools_config).await;
+
         let mut loop_ = Self {
             bus: Arc::new(bus),
             provider,
@@ -75,16 +115,99 @@ impl AgentLoop {
             max_iterations: config.max_iterations,
             context_window_tokens: config.context_window_tokens,
             tools: Arc::new(tools),
+            skills,
             sessions: Arc::new(sessions),
             context: Arc::new(context),
             hooks: Arc::new(RwLock::new(Vec::new())),
             running: Arc::new(RwLock::new(false)),
+            mcp_clients,
+            mcp_integrations,
         };
 
-        // Register default tools
+        // Register default tools (including MCP tools)
         loop_.register_default_tools().await;
 
         Ok(loop_)
+    }
+
+    /// Initialize MCP clients from configuration
+    async fn initialize_mcp_clients(tools_config: &Option<ToolsConfig>) -> (Vec<Arc<McpClient>>, Vec<Arc<McpToolIntegration>>) {
+        let mut clients = Vec::new();
+        let mut integrations = Vec::new();
+
+        let config = match tools_config {
+            Some(cfg) => cfg,
+            None => return (clients, integrations),
+        };
+
+        if config.mcp_servers.is_empty() {
+            return (clients, integrations);
+        }
+
+        for (name, server_config) in &config.mcp_servers {
+            info!("Initializing MCP client: {}", name);
+
+            let client = Self::create_mcp_client(name, server_config);
+            match client.connect().await {
+                Ok(()) => {
+                    info!("MCP client '{}' connected successfully", name);
+
+                    // Create tool integration for this client
+                    let integration = McpToolIntegration::new(client.clone());
+                    match integration.initialize().await {
+                        Ok(tools) => {
+                            info!("MCP client '{}' discovered {} tools", name, tools.len());
+                            clients.push(client);
+                            integrations.push(Arc::new(integration));
+                        }
+                        Err(e) => {
+                            warn!("Failed to discover tools from MCP client '{}': {}", name, e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to connect MCP client '{}': {}", name, e);
+                }
+            }
+        }
+
+        (clients, integrations)
+    }
+
+    /// Create MCP client from configuration
+    fn create_mcp_client(_name: &str, config: &McpServerConfig) -> Arc<McpClient> {
+        use crate::mcp::transport::TransportConfig;
+        use std::sync::Arc;
+
+        let transport_type = config.transport_type.as_deref().unwrap_or("stdio");
+
+        let client_config = if transport_type == "sse" && !config.url.is_empty() {
+            // SSE transport
+            McpClientConfig {
+                transport: TransportConfig::Sse {
+                    url: config.url.clone(),
+                    headers: config.headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                },
+                timeout_secs: config.tool_timeout,
+                auto_reconnect: true,
+                reconnect_delay_secs: 5,
+            }
+        } else {
+            // Stdio transport (default)
+            McpClientConfig {
+                transport: TransportConfig::Stdio {
+                    command: config.command.clone(),
+                    args: config.args.clone(),
+                    env: config.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                },
+                timeout_secs: config.tool_timeout,
+                auto_reconnect: true,
+                reconnect_delay_secs: 5,
+            }
+        };
+
+        info!("Creating MCP client with transport: {}", transport_type);
+        Arc::new(McpClient::new(client_config))
     }
 
     /// Register default tools
@@ -93,7 +216,7 @@ impl AgentLoop {
 
         // Shell tool - allow access to entire home directory for practical use
         let shell_config = ShellToolConfig::default();
-        self.tools.as_ref().register(Box::new(ShellTool::new(self.workspace.to_string_lossy().to_string(), shell_config))).await;
+        self.tools.as_ref().register(Arc::new(ShellTool::new(self.workspace.to_string_lossy().to_string(), shell_config))).await;
 
         // Filesystem tools - use home directory as allowed dir for convenience
         // This allows access to Desktop, Documents, etc.
@@ -105,17 +228,38 @@ impl AgentLoop {
         let allowed_dir_canonical = allowed_dir.canonicalize().unwrap_or_else(|_| allowed_dir.clone());
         info!("Using allowed directory: {} (canonical: {})", allowed_dir.display(), allowed_dir_canonical.display());
 
-        self.tools.as_ref().register(Box::new(ReadFileTool::new(&self.workspace, Some(allowed_dir_canonical.clone())))).await;
-        self.tools.as_ref().register(Box::new(WriteFileTool::new(&self.workspace, Some(allowed_dir_canonical.clone())))).await;
-        self.tools.as_ref().register(Box::new(EditFileTool::new(&self.workspace, Some(allowed_dir_canonical.clone())))).await;
-        self.tools.as_ref().register(Box::new(ListDirTool::new(&self.workspace, Some(allowed_dir_canonical)))).await;
+        self.tools.as_ref().register(Arc::new(ReadFileTool::new(&self.workspace, Some(allowed_dir_canonical.clone())))).await;
+        self.tools.as_ref().register(Arc::new(WriteFileTool::new(&self.workspace, Some(allowed_dir_canonical.clone())))).await;
+        self.tools.as_ref().register(Arc::new(EditFileTool::new(&self.workspace, Some(allowed_dir_canonical.clone())))).await;
+        self.tools.as_ref().register(Arc::new(ListDirTool::new(&self.workspace, Some(allowed_dir_canonical)))).await;
 
         // Web tools
         let web_search_config = WebSearchConfig::default();
-        self.tools.as_ref().register(Box::new(WebSearchTool::new(web_search_config))).await;
-        self.tools.as_ref().register(Box::new(WebFetchTool::new(None))).await;
+        self.tools.as_ref().register(Arc::new(WebSearchTool::new(web_search_config))).await;
+        self.tools.as_ref().register(Arc::new(WebFetchTool::new(None))).await;
+
+        // Register MCP tools from all connected MCP clients
+        self.register_mcp_tools().await;
 
         info!("Registered {} tools", self.tools.as_ref().tool_names().await.len());
+    }
+
+    /// Register MCP tools to the internal ToolRegistry
+    async fn register_mcp_tools(&mut self) {
+        if self.mcp_integrations.is_empty() {
+            return;
+        }
+
+        for integration in &self.mcp_integrations {
+            let mcp_tools = integration.get_all_tools().await;
+            let count = mcp_tools.len();
+
+            for tool in mcp_tools {
+                self.tools.as_ref().register_arc(tool).await;
+            }
+
+            info!("Registered {} MCP tools", count);
+        }
     }
 
     /// Add a hook
@@ -191,10 +335,13 @@ impl AgentLoop {
             max_iterations: self.max_iterations,
             context_window_tokens: self.context_window_tokens,
             tools: self.tools.clone(),
+            skills: self.skills.clone(),
             sessions: self.sessions.clone(),
             context: self.context.clone(),
             hooks: self.hooks.clone(),
             running: self.running.clone(),
+            mcp_clients: self.mcp_clients.clone(),
+            mcp_integrations: self.mcp_integrations.clone(),
         })
     }
 
@@ -214,6 +361,19 @@ impl AgentLoop {
             "content": msg.content,
         });
         session_handle.add_message(user_msg);
+
+        // Detect and execute skills if enabled
+        if let Some(skills) = &self.skills {
+            if let Some(skill_result) = self.detect_and_execute_skill(skills, &msg.content).await? {
+                info!("Skill executed, result len={}", skill_result.len());
+                // Add skill result as system context for the LLM
+                let skill_msg = serde_json::json!({
+                    "role": "system",
+                    "content": format!("[Skill Context]: {}", skill_result),
+                });
+                session_handle.add_message(skill_msg);
+            }
+        }
 
         // Build messages for LLM
         let history = session_handle.get_history(0);
@@ -244,8 +404,16 @@ impl AgentLoop {
 
         info!("Dispatch: calling LLM for chat_id={}", msg.chat_id);
 
-        // Get tool definitions for LLM
-        let tool_defs = self.tools.get_definitions().await;
+        // Get tool definitions (tools + skills)
+        let mut tool_defs: Vec<serde_json::Value> = self.tools.get_definitions().await;
+
+        // Add skills as tools if enabled
+        if let Some(skills) = &self.skills {
+            let skill_tools = skills.get_tool_definitions().await;
+            let skill_count = skill_tools.len();
+            tool_defs.extend(skill_tools.into_iter().map(|t| serde_json::to_value(t).unwrap()));
+            info!("Registered {} skills as LLM tools", skill_count);
+        }
 
         // Call LLM
         let request = nanobot_providers::ChatRequest {
@@ -291,6 +459,8 @@ impl AgentLoop {
                         })
                     }).collect::<Vec<_>>(),
                 });
+                info!("Saving assistant message with tool_calls: {}",
+                    serde_json::to_string(&assistant_msg_with_tool_calls).unwrap_or_default());
                 session_handle.add_message(assistant_msg_with_tool_calls);
 
                 // Execute tool calls and get tool results
@@ -402,21 +572,50 @@ impl AgentLoop {
     /// Returns Ok(None) if processing is complete
     async fn execute_tool_calls(
         &self,
-        msg: &InboundMessage,
+        _msg: &InboundMessage,
         session: &mut crate::session::SessionHandle,
         tool_calls: &[nanobot_providers::ToolCall],
     ) -> Result<Option<LLMResponse>, Box<dyn std::error::Error + Send + Sync>> {
+        // Check if any tool calls are skill calls
+        let skills = self.skills.as_ref();
+
         for tool_call in tool_calls {
             info!("Executing tool: {}", tool_call.name);
 
-            let result = self.tools.execute(&tool_call.name, tool_call.arguments.clone()).await;
+            // Check if this is a skill call
+            let is_skill = skills.is_some_and(|s| {
+                futures::executor::block_on(async {
+                    s.get(&tool_call.name).await.is_some()
+                })
+            });
 
-            let result_value = match result {
-                Ok(v) => {
-                    // Convert result to string - some providers expect string content
-                    v.to_string()
-                },
-                Err(e) => format!("{{\"error\": \"{}\"}}", e.to_string()),
+            let result_value = if is_skill {
+                // Execute skill - inject skill's system prompt into the next LLM call
+                // The skill prompt will be added to the system message
+                info!("Skill call detected: {}", tool_call.name);
+
+                // Get skill prompt and add as context
+                if let Some(skill_registry) = skills {
+                    let skill_prompt = skill_registry.get_skill_prompt(&tool_call.name).await;
+                    if let Some(prompt) = skill_prompt {
+                        // Add skill prompt as a system message for the next LLM call
+                        let skill_system_msg = serde_json::json!({
+                            "role": "system",
+                            "content": format!("[Skill Context: {}]\n{}", tool_call.name, prompt),
+                        });
+                        session.add_message(skill_system_msg);
+                    }
+                }
+
+                // Return a placeholder - the actual skill execution happens via LLM
+                format!("Skill '{}' executed. See system context for details.", tool_call.name)
+            } else {
+                // Regular tool execution
+                let result = self.tools.execute(&tool_call.name, tool_call.arguments.clone()).await;
+                match result {
+                    Ok(v) => v.to_string(),
+                    Err(e) => format!("{{\"error\": \"{}\"}}", e.to_string()),
+                }
             };
 
             // Save tool response to session
@@ -431,32 +630,7 @@ impl AgentLoop {
 
         // After executing all tool calls, make another LLM call to get the final response
         let history = session.get_history(0);
-        info!("=== DEBUG: Session History ({} messages) ===", history.len());
-        for (i, h) in history.iter().enumerate() {
-            let role = h.get("role").and_then(|v| v.as_str()).unwrap_or("unknown");
-            let content_len = h.get("content").and_then(|v| v.as_str()).map(|s| s.len()).unwrap_or(0);
-            info!("  [{}] role={}, content_len={}", i, role, content_len);
-        }
-
         let messages_value = self.context.build_messages_from_history(history);
-        info!("=== DEBUG: Messages to send to LLM ({} messages) ===", messages_value.len());
-        for (i, m) in messages_value.iter().enumerate() {
-            let role = m.get("role").and_then(|v| v.as_str()).unwrap_or("unknown");
-            let content_preview = m.get("content")
-                .and_then(|v| v.as_str())
-                .map(|s| {
-                    if s.len() > 100 {
-                        // Use char-based slicing to avoid UTF-8 boundary issues
-                        let truncated: String = s.chars().take(100).collect();
-                        format!("{}...", truncated)
-                    } else {
-                        s.to_string()
-                    }
-                })
-                .unwrap_or_else(|| "[non-string content]".to_string());
-            info!("  [{}] role={}, content_preview={}", i, role, content_preview);
-        }
-        info!("=== END DEBUG ===");
 
         // Convert Value messages to Message structs
         let messages: Vec<Message> = messages_value
@@ -464,8 +638,16 @@ impl AgentLoop {
             .filter_map(|v| serde_json::from_value(v).ok())
             .collect();
 
-        // Get tool definitions for LLM
-        let tool_defs = self.tools.get_definitions().await;
+        // Get tool definitions (tools + skills)
+        let mut tool_defs: Vec<serde_json::Value> = self.tools.get_definitions().await;
+        if let Some(skill_registry) = skills {
+            let skill_tools = skill_registry.get_tool_definitions().await;
+            let skill_count = skill_tools.len();
+            tool_defs.extend(skill_tools.into_iter().map(|t| serde_json::to_value(t).unwrap()));
+            if skill_count > 0 {
+                info!("Added {} skills to LLM tool definitions", skill_count);
+            }
+        }
 
         let request = nanobot_providers::ChatRequest {
             messages,
@@ -481,11 +663,73 @@ impl AgentLoop {
         };
 
         let response = self.provider.chat_with_retry(request).await?;
-        info!("=== DEBUG: LLM Response ===");
-        info!("  content: {:?}", response.content);
-        info!("  tool_calls: {:?}", response.tool_calls);
-        info!("=== END DEBUG ===");
         Ok(Some(response))
+    }
+
+    /// Detect and execute skills from user input
+    /// Returns Some(skill_output) if a skill was triggered, None otherwise
+    async fn detect_and_execute_skill(
+        &self,
+        registry: &SkillRegistry,
+        content: &str,
+    ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+        // Check for /skill: or /skills: command (colon syntax)
+        if let Some(rest) = content.strip_prefix("/skill:").or_else(|| content.strip_prefix("/skills:")) {
+            let parts: Vec<&str> = rest.splitn(2, ' ').collect();
+            if parts.len() >= 2 {
+                let skill_id = parts[0].trim();
+                let skill_input = parts[1].trim();
+
+                let input = SkillInput::new(skill_input);
+                match registry.execute(skill_id, input).await {
+                    Ok(output) => return Ok(Some(output.content)),
+                    Err(e) => return Ok(Some(format!("Skill error: {}", e))),
+                }
+            }
+        }
+
+        // Check for /skill <name> (space syntax, Claude Code style)
+        if let Some(rest) = content.strip_prefix("/skill ") {
+            let parts: Vec<&str> = rest.splitn(2, ' ').collect();
+            if parts.len() >= 2 {
+                let skill_id = parts[0].trim();
+                let skill_input = parts[1].trim();
+
+                let input = SkillInput::new(skill_input);
+                match registry.execute(skill_id, input).await {
+                    Ok(output) => return Ok(Some(output.content)),
+                    Err(e) => return Ok(Some(format!("Skill error: {}", e))),
+                }
+            }
+        }
+
+        // Check for specific skill commands (Claude Code style)
+        // /memory, /code-review, /planning
+        if let Some(input) = content.strip_prefix("/memory ") {
+            let input = SkillInput::new(input.trim());
+            match registry.execute("memory", input).await {
+                Ok(output) => return Ok(Some(output.content)),
+                Err(e) => return Ok(Some(format!("Skill error: {}", e))),
+            }
+        }
+
+        if let Some(input) = content.strip_prefix("/code-review ") {
+            let input = SkillInput::new(input.trim());
+            match registry.execute("code_review", input).await {
+                Ok(output) => return Ok(Some(output.content)),
+                Err(e) => return Ok(Some(format!("Skill error: {}", e))),
+            }
+        }
+
+        if let Some(input) = content.strip_prefix("/planning ") {
+            let input = SkillInput::new(input.trim());
+            match registry.execute("planning", input).await {
+                Ok(output) => return Ok(Some(output.content)),
+                Err(e) => return Ok(Some(format!("Skill error: {}", e))),
+            }
+        }
+
+        Ok(None)
     }
 
     /// Stop the agent loop
@@ -511,10 +755,13 @@ impl Clone for AgentLoop {
             max_iterations: self.max_iterations,
             context_window_tokens: self.context_window_tokens,
             tools: self.tools.clone(),
+            skills: self.skills.clone(),
             sessions: self.sessions.clone(),
             context: self.context.clone(),
             hooks: self.hooks.clone(),
             running: self.running.clone(),
+            mcp_clients: self.mcp_clients.clone(),
+            mcp_integrations: self.mcp_integrations.clone(),
         }
     }
 }

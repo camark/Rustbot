@@ -156,7 +156,7 @@ fn select_provider() -> Result<String> {
     ];
 
     println!("Select a provider:");
-    for (i, (name, desc)) in providers.iter().enumerate() {
+    for (i, (_name, desc)) in providers.iter().enumerate() {
         println!("  {}. {}", i + 1, desc);
     }
     print!("> ");
@@ -195,7 +195,7 @@ fn select_model(provider: &str) -> Result<String> {
 
     println!();
     println!("Select a model:");
-    for (i, (model, desc)) in models.iter().enumerate() {
+    for (i, (_model, desc)) in models.iter().enumerate() {
         println!("  {}. {}", i + 1, desc);
     }
     print!("> ");

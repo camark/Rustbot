@@ -12,7 +12,7 @@ use tracing::{info, error};
 use crate::{AgentLoop, session::SessionManager};
 use nanobot_bus::MessageBus;
 
-use super::{CronService, HeartbeatService, HeartbeatConfig};
+use super::{CronService, HeartbeatService};
 
 /// Service manager for coordinating all background services
 pub struct ServiceManager {
@@ -122,6 +122,7 @@ pub struct ServiceStatus {
 
 /// Helper to create and configure services
 pub struct ServiceBuilder {
+    #[allow(dead_code)]
     message_bus: MessageBus,
     session_manager: Arc<SessionManager>,
 }

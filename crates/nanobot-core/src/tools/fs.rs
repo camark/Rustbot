@@ -4,9 +4,8 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::env;
 use std::fs;
-use std::io;
 use std::path::{Component, Path, PathBuf};
-use tracing::{debug, info, warn};
+use tracing::info;
 
 use crate::tools::{Tool, ToolError, ToolResult};
 

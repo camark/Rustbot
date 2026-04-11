@@ -2,10 +2,10 @@
 
 use anyhow::{Context, Result};
 use nanobot_bus::MessageBus;
-use nanobot_config::{Config, ConfigLoader};
+use nanobot_config::ConfigLoader;
 use nanobot_core::{AgentLoop, AgentLoopConfig};
 use nanobot_providers::{create_provider_from_spec, match_provider, ProviderBackendType};
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -88,6 +88,7 @@ pub async fn run(
         context_window_tokens: config.agents.defaults.context_window_tokens,
         timezone: config.agents.defaults.timezone.clone(),
         tools_config: None,
+        skills_enabled: false,
     };
 
     // Create agent loop

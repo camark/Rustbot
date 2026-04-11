@@ -1,13 +1,12 @@
 //! Gateway command - Start the gateway server
 
 use anyhow::{Context, Result};
-use nanobot_channels::{ChannelManager, ChannelRegistry, create_default_registry, AuthStorage};
+use nanobot_channels::{ChannelManager, create_default_registry};
 use nanobot_channels::auth::ChannelAuth;
 use nanobot_config::{ConfigLoader, ConfigPaths};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
-use tracing::{info, error, warn};
+use tracing::error;
 
 /// Run the gateway command
 pub async fn run(port: Option<u16>, config_path: Option<&str>) -> Result<()> {
@@ -177,6 +176,7 @@ pub async fn run(port: Option<u16>, config_path: Option<&str>) -> Result<()> {
         context_window_tokens: 65_536,
         timezone: "Asia/Shanghai".to_string(),
         tools_config: None,
+        skills_enabled: false,
     };
 
     let agent_loop = nanobot_core::AgentLoop::new(

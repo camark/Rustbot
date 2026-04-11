@@ -45,8 +45,8 @@ impl ContextBuilder {
         &self,
         history: Vec<serde_json::Value>,
         current_message: &str,
-        channel: &str,
-        chat_id: &str,
+        _channel: &str,
+        _chat_id: &str,
     ) -> Vec<serde_json::Value> {
         let mut messages = Vec::with_capacity(history.len() + 3);
 
@@ -144,8 +144,8 @@ You are currently running in CLI mode. Respond naturally to user messages."#.to_
         history: Vec<serde_json::Value>,
         current_message: &str,
         media: &[String],
-        channel: &str,
-        chat_id: &str,
+        _channel: &str,
+        _chat_id: &str,
     ) -> Vec<serde_json::Value> {
         let mut messages = Vec::with_capacity(history.len() + 3);
 

@@ -1,6 +1,6 @@
 //! Memory management for context window control
 
-use tiktoken_rs::{cl100k_base, CoreBPE};
+use tiktoken_rs::cl100k_base;
 
 /// Count tokens in a text string using cl100k_base encoding (used by GPT-4, Claude, etc.)
 pub fn count_tokens(text: &str) -> usize {

@@ -4,11 +4,9 @@
 
 use async_trait::async_trait;
 use reqwest::{Client, Response};
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::pin::Pin;
 use std::time::Duration;
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 use crate::base::{
     ChatRequest, GenerationSettings, LLMProvider, LLMResponse, Message, MessageContent,
@@ -183,12 +181,14 @@ impl OpenAiCompatProvider {
             let openai_tool_calls: Vec<Value> = tool_calls
                 .iter()
                 .map(|tc| {
+                    // DeepSeek requires arguments to be a JSON string, not an object
+                    let arguments_str = tc.arguments.to_string();
                     json!({
                         "id": tc.id,
                         "type": "function",
                         "function": {
                             "name": tc.name,
-                            "arguments": tc.arguments,
+                            "arguments": arguments_str,
                         }
                     })
                 })

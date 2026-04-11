@@ -2,11 +2,12 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use serde::de::{self, Deserializer};
 use serde_json::Value;
 use std::pin::Pin;
 use std::future::Future;
 
-use crate::error::{ProviderError, Result};
+use crate::error::Result;
 
 // ============================================================================
 // Core Types
@@ -207,7 +208,7 @@ pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<MessageContent>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_tool_calls_opt")]
     pub tool_calls: Option<Vec<ToolCall>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -215,6 +216,54 @@ pub struct Message {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+}
+
+/// Deserialize Option<Vec<ToolCall>> from OpenAI format (with nested function object) or flat format
+fn deserialize_tool_calls_opt<'de, D>(deserializer: D) -> std::result::Result<Option<Vec<ToolCall>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt = Option::<Vec<serde_json::Value>>::deserialize(deserializer)?;
+    match opt {
+        None => Ok(None),
+        Some(values) => {
+            let tool_calls: std::result::Result<Vec<ToolCall>, _> = values.into_iter()
+                .map(|v| {
+                    // Try to detect format: OpenAI has "function" nested, flat has direct fields
+                    if let Some(obj) = v.as_object() {
+                        if obj.contains_key("function") {
+                            // OpenAI format: {id, type: "function", function: {name, arguments}}
+                            #[derive(Deserialize)]
+                            struct OpenAiFormat {
+                                id: String,
+                                function: OpenAiFunction,
+                            }
+                            #[derive(Deserialize)]
+                            struct OpenAiFunction {
+                                name: String,
+                                arguments: Value,
+                            }
+                            let openai: OpenAiFormat = serde_json::from_value(v)
+                                .map_err(de::Error::custom)?;
+                            Ok(ToolCall {
+                                id: openai.id,
+                                name: openai.function.name,
+                                arguments: openai.function.arguments,
+                                extra_content: None,
+                                provider_specific_fields: None,
+                            })
+                        } else {
+                            // Flat format: {id, name, arguments}
+                            serde_json::from_value(v).map_err(de::Error::custom)
+                        }
+                    } else {
+                        Err(de::Error::custom("tool_call must be an object"))
+                    }
+                })
+                .collect();
+            Ok(Some(tool_calls?))
+        }
+    }
 }
 
 impl Message {

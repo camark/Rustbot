@@ -77,7 +77,7 @@ impl HeartbeatService {
 
         let session_manager = self.session_manager.clone();
         let config = self.config.clone();
-        let running = self.running.clone();
+        let _running = self.running.clone();
         let mut shutdown_rx = self.shutdown_tx.subscribe();
 
         tokio::spawn(async move {

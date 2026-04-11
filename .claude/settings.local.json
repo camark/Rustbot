@@ -39,7 +39,23 @@
       "Bash(del /q \"C:\\\\Users\\\\gongm\\\\.nanobot\\\\sessions\\\\*.json\")",
       "Bash(rm:*)",
       "Bash(taskkill //F //IM rustbot.exe)",
-      "Bash(findstr rustbot.exe)"
+      "Bash(findstr rustbot.exe)",
+      "Bash(protoc --version)",
+      "Bash(sudo apt:*)",
+      "Bash(cat ~/.nanobot/sessions/*.json)",
+      "Bash(target/debug/rustbot agent:*)",
+      "Bash(script -q -c \"echo -e '第一次\\\\n第二次\\\\n/quit' | target/debug/rustbot agent\" /dev/null)",
+      "Bash(mkdir -p ~/.nanobot/skills/code-review)",
+      "Bash(mkdir -p ~/.nanobot/skills/planning)",
+      "Bash(timeout 10:*)",
+      "Bash(chmod +x /tmp/test_mcp.sh)",
+      "Bash(/tmp/test_mcp.sh)",
+      "Bash(git:*)",
+      "Bash(timeout 5 npx -y @modelcontextprotocol/server-filesystem /tmp/mcp-test)",
+      "Bash(cargo fix:*)",
+      "Bash(grep -A 3 \"unused import: \\\\`Tool\\\\`\")",
+      "Bash(grep -A 3 \"unused import: \\\\`Context\\\\`\")",
+      "Bash(ls /home/gm/git/Rustbot/README*.md)"
     ]
   }
 }

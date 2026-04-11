@@ -11,7 +11,7 @@ use axum::{
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tracing::{info, error, warn};
+use tracing::{info, warn};
 
 use crate::auth::ApiAuth;
 use crate::routes::{list_models, get_model, create_chat_completion, ApiState};

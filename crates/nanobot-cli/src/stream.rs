@@ -4,11 +4,13 @@ use std::io;
 use tokio::io::{AsyncWriteExt, Stdout};
 
 /// Handle streaming output
+#[allow(dead_code)]
 pub struct StreamWriter {
     stdout: Stdout,
     buffer: String,
 }
 
+#[allow(dead_code)]
 impl StreamWriter {
     pub fn new() -> Self {
         Self {

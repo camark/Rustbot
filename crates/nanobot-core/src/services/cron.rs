@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
-use tracing::{info, error, warn};
+use tracing::{info, warn};
 
 /// Cron service for scheduling periodic tasks
 pub struct CronService {
@@ -15,6 +15,7 @@ pub struct CronService {
 }
 
 struct CronJob {
+    #[allow(dead_code)]
     name: String,
     schedule: Schedule,
     action: JobAction,

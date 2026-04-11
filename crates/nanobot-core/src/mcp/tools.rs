@@ -11,11 +11,11 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use super::client::McpClient;
 use super::protocol::Tool as McpTool;
-use crate::tools::{Tool, ToolResult, ToolError};
+use crate::tools::{ToolResult, ToolError};
 
 /// MCP Tool wrapper that implements the internal Tool trait
 pub struct McpToolWrapper {

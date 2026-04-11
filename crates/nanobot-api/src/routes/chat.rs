@@ -3,20 +3,18 @@
 use axum::{
     extract::State,
     http::StatusCode,
-    response::{IntoResponse, Response, Sse},
+    response::{IntoResponse, Sse},
     Json,
 };
 use axum::response::sse::Event;
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
-use std::{convert::Infallible, pin::Pin, sync::Arc};
+use std::{pin::Pin, sync::Arc};
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
-use nanobot_bus::{InboundMessage, MessageBus, OutboundMessage};
-use nanobot_core::{AgentLoop, AgentLoopConfig};
-use nanobot_providers::{create_provider_from_spec, match_provider, ProviderBackendType};
-use nanobot_config::{Config, ConfigLoader};
+use nanobot_bus::{InboundMessage, MessageBus};
+use nanobot_config::Config;
 
 /// Chat completion request (OpenAI-compatible)
 #[derive(Debug, Clone, Deserialize)]
@@ -30,14 +28,19 @@ pub struct ChatCompletionRequest {
     #[serde(default)]
     pub temperature: Option<f32>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub top_p: Option<f32>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub n: Option<u32>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub stop: Option<serde_json::Value>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub presence_penalty: Option<f32>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub frequency_penalty: Option<f32>,
 }
 

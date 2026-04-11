@@ -9,3 +9,4 @@ pub mod channels;
 pub mod api;
 pub mod cron;
 pub mod services;
+pub mod mcp;

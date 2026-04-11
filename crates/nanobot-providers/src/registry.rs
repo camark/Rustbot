@@ -3,7 +3,7 @@
 //! Single source of truth for LLM provider metadata.
 //! Order matters — it controls match priority and fallback.
 
-use nanobot_config::{ProviderBackend as ConfigBackend, ProviderConfig, ProvidersConfig};
+use nanobot_config::{ProviderConfig, ProvidersConfig};
 
 /// Provider specification
 #[derive(Debug, Clone)]

@@ -1,12 +1,11 @@
 //! Cron command - Manage scheduled tasks
 
-use anyhow::{Context, Result};
-use std::path::PathBuf;
+use anyhow::Result;
 use cron::Schedule;
 use std::str::FromStr;
 
 /// Run the cron add command
-pub async fn add_job(name: String, schedule: String, config_path: Option<&str>) -> Result<()> {
+pub async fn add_job(name: String, schedule: String, _config_path: Option<&str>) -> Result<()> {
     // Validate cron expression
     match Schedule::from_str(&schedule) {
         Ok(_) => {
@@ -24,7 +23,7 @@ pub async fn add_job(name: String, schedule: String, config_path: Option<&str>) 
 }
 
 /// Run the cron list command
-pub async fn list_jobs(config_path: Option<&str>) -> Result<()> {
+pub async fn list_jobs(_config_path: Option<&str>) -> Result<()> {
     println!("📅 Scheduled Jobs");
     println!();
     println!("No jobs configured yet.");
@@ -42,13 +41,13 @@ pub async fn list_jobs(config_path: Option<&str>) -> Result<()> {
 }
 
 /// Run the cron remove command
-pub async fn remove_job(name: String, config_path: Option<&str>) -> Result<()> {
+pub async fn remove_job(name: String, _config_path: Option<&str>) -> Result<()> {
     println!("🗑️  Removed cron job '{}'", name);
     Ok(())
 }
 
 /// Run the cron run command (manual execution)
-pub async fn run_job(name: String, config_path: Option<&str>) -> Result<()> {
+pub async fn run_job(name: String, _config_path: Option<&str>) -> Result<()> {
     println!("▶️  Executing cron job '{}'", name);
     println!();
     println!("Note: Job execution is not yet fully implemented.");

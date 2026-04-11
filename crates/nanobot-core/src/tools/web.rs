@@ -1,11 +1,11 @@
 //! Web search and fetch tools
 
 use async_trait::async_trait;
-use reqwest::{Client, StatusCode};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
-use tracing::{debug, info, warn};
+use tracing::info;
 
 use crate::tools::{Tool, ToolError, ToolResult};
 

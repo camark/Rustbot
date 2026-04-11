@@ -7,6 +7,7 @@ pub mod web;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::Mutex;
 
 pub use shell::{ShellTool, ShellToolConfig};
@@ -72,7 +73,7 @@ pub trait Tool: Send + Sync {
 
 /// Tool registry
 pub struct ToolRegistry {
-    tools: Mutex<HashMap<String, Box<dyn Tool>>>,
+    tools: Mutex<HashMap<String, Arc<dyn Tool>>>,
 }
 
 impl ToolRegistry {
@@ -84,14 +85,19 @@ impl ToolRegistry {
     }
 
     /// Register a tool
-    pub async fn register(&self, tool: Box<dyn Tool>) {
+    pub async fn register(&self, tool: Arc<dyn Tool>) {
         let name = tool.name().to_string();
         let mut tools = self.tools.lock().await;
         tools.insert(name, tool);
     }
 
+    /// Register a tool wrapper (for MCP tools)
+    pub async fn register_arc(&self, tool: Arc<dyn Tool>) {
+        self.register(tool).await;
+    }
+
     /// Unregister a tool
-    pub async fn unregister(&self, name: &str) -> Option<Box<dyn Tool>> {
+    pub async fn unregister(&self, name: &str) -> Option<Arc<dyn Tool>> {
         let mut tools = self.tools.lock().await;
         tools.remove(name)
     }

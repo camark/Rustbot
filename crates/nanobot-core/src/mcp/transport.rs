@@ -13,7 +13,7 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, error, info, trace};
+use tracing::{debug, info, trace};
 
 use super::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 
@@ -171,10 +171,10 @@ impl StdioTransport {
             .context("Failed to take stdin handle")?;
 
         // Store stdin handle for later use
-        let stdin_handle = Arc::new(Mutex::new(Some(stdin)));
+        let _stdin_handle = Arc::new(Mutex::new(Some(stdin)));
 
         // Start stderr reader
-        let stderr_reader = tokio::spawn(async move {
+        let _stderr_reader = tokio::spawn(async move {
             let reader = BufReader::new(stderr);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {

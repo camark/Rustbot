@@ -2,10 +2,9 @@
 
 use crate::events::{InboundMessage, OutboundMessage};
 use tokio::sync::Mutex;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, error};
+use tracing::debug;
 
 /// Message bus for inter-component communication
 #[derive(Clone)]

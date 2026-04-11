@@ -1,11 +1,11 @@
 //! Channels command - Manage messaging channel integrations
 
 use anyhow::{Context, Result};
-use nanobot_channels::{AuthStorage, ChannelManager, ChannelRegistry, create_default_registry};
+use nanobot_channels::{AuthStorage, create_default_registry};
 use nanobot_channels::auth::ChannelAuth;
-use nanobot_config::{Config, ConfigLoader};
+use nanobot_config::ConfigLoader;
 use std::path::PathBuf;
-use tracing::{info, debug, error};
+use tracing::{info, debug, error, warn};
 use std::sync::Arc;
 use nanobot_bus::MessageBus;
 use nanobot_core::{AgentLoop, AgentLoopConfig};
@@ -24,7 +24,7 @@ pub async fn login(channel_name: String, force: bool, config_path: Option<&str>)
         });
 
     let loader = ConfigLoader::new(&config_path);
-    let config = loader.load().context("Failed to load config")?;
+    let _config = loader.load().context("Failed to load config")?;
 
     // Get config directory for auth storage
     let config_dir = config_path.parent().unwrap_or_else(|| std::path::Path::new("."));
@@ -163,7 +163,7 @@ pub async fn status(config_path: Option<&str>) -> Result<()> {
         });
 
     let loader = ConfigLoader::new(&config_path);
-    let config = loader.load().context("Failed to load config")?;
+    let _config = loader.load().context("Failed to load config")?;
 
     // Get config directory for auth storage
     let config_dir = config_path.parent().unwrap_or_else(|| std::path::Path::new("."));
@@ -321,6 +321,7 @@ pub async fn start(channel_name: String, config_path: Option<&str>) -> Result<()
         context_window_tokens: config.agents.defaults.context_window_tokens,
         timezone: config.agents.defaults.timezone.clone(),
         tools_config: None,
+        skills_enabled: false,
     };
 
     // Create agent loop
@@ -333,6 +334,21 @@ pub async fn start(channel_name: String, config_path: Option<&str>) -> Result<()
     .context("Failed to create agent loop")?;
 
     let agent_loop = Arc::new(agent_loop);
+
+    // Write PID file for stop command
+    let pid_file = std::path::Path::new(".nanobot")
+        .join(format!("channels_{}.pid", channel_name));
+
+    // Create .nanobot directory if it doesn't exist
+    if let Some(parent) = pid_file.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    // Write current process PID
+    let current_pid = std::process::id();
+    if let Err(e) = std::fs::write(&pid_file, current_pid.to_string()) {
+        warn!("Failed to write PID file: {}", e);
+    }
 
     // Start the channel connector
     let connector_clone = connector.clone();
@@ -364,20 +380,114 @@ pub async fn start(channel_name: String, config_path: Option<&str>) -> Result<()
             }
         }
         Err(e) => {
+            // Clean up PID file on failure
+            let _ = std::fs::remove_file(&pid_file);
             anyhow::bail!("Failed to start channel '{}': {}", channel_name, e);
         }
     }
 }
 
 /// Run the channels stop command
-pub async fn stop(_channel_name: String, _config_path: Option<&str>) -> Result<()> {
-    // TODO: Implement stop command
-    // This would need to:
-    // 1. Find the running channel instance
-    // 2. Call connector.stop()
-    // 3. Wait for graceful shutdown
+pub async fn stop(channel_name: String, _config_path: Option<&str>) -> Result<()> {
 
-    anyhow::bail!("Stop command not yet implemented");
+    // Create registry
+    let registry = create_default_registry();
+
+    // Check if channel exists
+    if !registry.contains(&channel_name).await {
+        anyhow::bail!(
+            "Unknown channel '{}'. Available channels: {:?}",
+            channel_name,
+            registry.list_names().await
+        );
+    }
+
+    // Check for running channel process via PID file
+    let pid_file = std::path::Path::new(".nanobot")
+        .join(format!("channels_{}.pid", channel_name));
+
+    if !pid_file.exists() {
+        // Try alternative location
+        let alt_pid_file = dirs::home_dir()
+            .map(|d| d.join(".nanobot").join(format!("channels_{}.pid", channel_name)))
+            .unwrap_or_else(|| PathBuf::from(format!(".nanobot/channels_{}.pid", channel_name)));
+
+        if !alt_pid_file.exists() {
+            anyhow::bail!(
+                "Channel '{}' is not running (no PID file found). \
+                 Start it with: rustbot channels start {}",
+                channel_name,
+                channel_name
+            );
+        }
+    }
+
+    // Read PID and stop the process
+    let pid_file = if pid_file.exists() { pid_file } else {
+        dirs::home_dir()
+            .map(|d| d.join(".nanobot").join(format!("channels_{}.pid", channel_name)))
+            .unwrap_or_else(|| PathBuf::from(format!(".nanobot/channels_{}.pid", channel_name)))
+    };
+
+    let pid_content = tokio::fs::read_to_string(&pid_file)
+        .await
+        .context("Failed to read PID file")?;
+
+    let pid: u32 = pid_content.trim().parse()
+        .map_err(|_| anyhow::anyhow!("Invalid PID in file: {}", pid_content.trim()))?;
+
+    // Try to kill the process
+    #[cfg(unix)]
+    {
+        use nix::sys::signal::{kill, Signal};
+        use nix::unistd::Pid;
+
+        match kill(Pid::from_raw(pid as i32), Signal::SIGTERM) {
+            Ok(_) => {
+                println!("✅ Channel '{}' stopped (PID: {})", channel_name, pid);
+                // Remove PID file
+                let _ = tokio::fs::remove_file(&pid_file).await;
+            }
+            Err(nix::errno::Errno::ESRCH) => {
+                // Process not found - already stopped
+                println!("⚠️  Channel '{}' was not running (PID {} not found)", channel_name, pid);
+                // Remove stale PID file
+                let _ = tokio::fs::remove_file(&pid_file).await;
+            }
+            Err(e) => {
+                anyhow::bail!("Failed to stop channel '{}': {}", channel_name, e);
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        use std::process::Command;
+
+        match Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F"])
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                println!("✅ Channel '{}' stopped (PID: {})", channel_name, pid);
+                let _ = tokio::fs::remove_file(&pid_file).await;
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if stderr.contains("not found") || stderr.contains("does not exist") {
+                    println!("⚠️  Channel '{}' was not running (PID {} not found)", channel_name, pid);
+                    let _ = tokio::fs::remove_file(&pid_file).await;
+                } else {
+                    anyhow::bail!("Failed to stop channel '{}': {}", channel_name, stderr);
+                }
+            }
+            Err(e) => {
+                anyhow::bail!("Failed to stop channel '{}': {}", channel_name, e);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Helper to read a line from stdin

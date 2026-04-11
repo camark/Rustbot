@@ -9,6 +9,14 @@ This is a complete Rust rewrite of [nanobot](https://github.com/HKUDS/nanobot), 
 - **Single Binary**: Easy deployment, no dependencies
 - **Type Safety**: Compile-time guarantees
 
+## Languages (语言)
+
+- [English](README.md)
+- [简体中文](README.zh-CN.md)
+- [日本語](README.ja.md)
+- [Deutsch](README.de.md)
+- [Français](README.fr.md)
+
 ## Project Structure
 
 ```
@@ -146,6 +154,18 @@ Config file: `~/.nanobot/config.json`
 
 - Rust 1.75+ (stable)
 - Tokio runtime
+
+> **Note for Ubuntu users: Install protoc**
+>
+> If you encounter protoc-related errors during build, install the Protocol Buffers compiler:
+>
+> ```bash
+> # Ubuntu/Debian
+> sudo apt-get update && sudo apt-get install -y protobuf-compiler
+>
+> # Verify installation
+> protoc --version
+> ```
 
 ### Run Tests
 

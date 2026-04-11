@@ -194,6 +194,7 @@ impl ChannelManager {
     }
 
     /// Publish a channel event (for logging/hooks)
+    #[allow(dead_code)]
     fn publish_event(&self, event: ChannelEvent) {
         match &event {
             ChannelEvent::Started { name } => info!("Channel started: {}", name),

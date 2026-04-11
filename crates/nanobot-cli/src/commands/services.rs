@@ -1,10 +1,9 @@
 //! Services command - Manage background services
 
-use anyhow::{Context, Result};
-use std::path::PathBuf;
+use anyhow::Result;
 
 /// Run the services status command
-pub async fn status(config_path: Option<&str>) -> Result<()> {
+pub async fn status(_config_path: Option<&str>) -> Result<()> {
     println!("🔧 Services Status");
     println!();
 
@@ -34,7 +33,7 @@ pub async fn status(config_path: Option<&str>) -> Result<()> {
 }
 
 /// Run the services start command
-pub async fn start(service_name: String, config_path: Option<&str>) -> Result<()> {
+pub async fn start(service_name: String, _config_path: Option<&str>) -> Result<()> {
     match service_name.as_str() {
         "heartbeat" => {
             println!("✅ Heartbeat service started");
@@ -53,7 +52,7 @@ pub async fn start(service_name: String, config_path: Option<&str>) -> Result<()
 }
 
 /// Run the services stop command
-pub async fn stop(service_name: String, config_path: Option<&str>) -> Result<()> {
+pub async fn stop(service_name: String, _config_path: Option<&str>) -> Result<()> {
     match service_name.as_str() {
         "heartbeat" => {
             println!("⏹️  Heartbeat service stopped");

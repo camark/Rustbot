@@ -10,11 +10,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde_json::json;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 
 use super::protocol::{
-    ClientCapabilities, ClientInfo, InitializeParams, InitializeResult, JsonRpcRequest,
-    McpResponse, Tool, ToolCallRequest, ToolCallResult, ToolsCapability, ToolsListResult,
+    ClientCapabilities, InitializeParams, InitializeResult, JsonRpcRequest, Tool, ToolCallRequest, ToolCallResult, ToolsCapability, ToolsListResult,
     MCP_PROTOCOL_VERSION, rustbot_client_info,
 };
 use super::transport::{create_transport, McpTransport, TransportConfig};
@@ -206,7 +205,7 @@ impl McpClient {
             });
 
             // Send initialized notification
-            let notify = JsonRpcRequest::new("notifications/initialized", json!({}));
+            let _notify = JsonRpcRequest::new("notifications/initialized", json!({}));
             let _ = transport.send_notification("notifications/initialized", json!({})).await;
 
             Ok(())

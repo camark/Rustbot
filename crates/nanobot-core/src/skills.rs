@@ -2,24 +2,8 @@
 //!
 //! This module provides a skill system for RustBot, allowing specialized
 //! capabilities to be loaded and executed on demand.
-//!
-//! # Architecture
-//!
-//! ```text
-//! ┌─────────────────┐
-//! │   SkillRegistry │
-//! │   - load skills │
-//! │   - discover    │
-//! │   - cache       │
-//! └────────┬────────┘
-//!          │
-//!    ┌─────┴─────┬──────────┬──────────┐
-//!    ▼           ▼          ▼          ▼
-//! ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐
-//! │ Memory │ │ Code   │ │ Plan   │ │ Custom │
-//! │ Skill  │ │ Review │ │ Skill  │ │ Skills │
-//! └────────┘ └────────┘ └────────┘ └────────┘
-//! ```
+
+pub mod loader;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -29,7 +13,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 /// Skill metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -399,6 +383,35 @@ impl SkillRegistry {
         info!("Registered {} built-in skills", skills.len());
     }
 
+    /// Load user skills from ~/.nanobot/skills/ directory
+    /// User skills override built-in skills with the same name (with warning)
+    pub async fn load_user_skills(&self, skills_dir: &Path) -> Result<()> {
+        use crate::skills::loader::SkillLoader;
+
+        let loader = SkillLoader::new(skills_dir.to_path_buf());
+        let user_skills = loader.load_skills().await?;
+
+        if user_skills.is_empty() {
+            return Ok(());
+        }
+
+        let mut skills = self.skills.write().await;
+        for skill in user_skills {
+            let id = skill.info().id.clone();
+            if skills.contains_key(&id) {
+                warn!("User skill '{}' overrides built-in skill", id);
+            } else {
+                info!("Registered user skill: {}", id);
+            }
+            // Wrap in Arc for storage
+            let skill_arc: Arc<dyn Skill> = Arc::from(skill);
+            skills.insert(id, skill_arc);
+        }
+
+        info!("Loaded {} user skills", skills.len() - 3); // Subtract built-ins
+        Ok(())
+    }
+
     /// Register a skill
     pub async fn register(&self, skill: Arc<dyn Skill>) {
         let mut skills = self.skills.write().await;
@@ -443,6 +456,41 @@ impl SkillRegistry {
 
         debug!("Executing skill '{}'", id);
         skill.execute(input).await
+    }
+
+    /// Get skill system prompt for LLM injection
+    pub async fn get_skill_prompt(&self, id: &str) -> Option<String> {
+        let skills = self.skills.read().await;
+        let skill = skills.get(id)?;
+        Some(skill.system_prompt().to_string())
+    }
+
+    /// Get all skills as LLM tool definitions
+    pub async fn get_tool_definitions(&self) -> Vec<nanobot_providers::ToolDefinition> {
+        use nanobot_providers::ToolDefinition;
+        use serde_json::json;
+
+        let skills = self.skills.read().await;
+        skills
+            .values()
+            .map(|skill| {
+                let info = skill.info();
+                ToolDefinition::new(
+                    info.id.clone(),
+                    info.description.clone(),
+                    json!({
+                        "type": "object",
+                        "properties": {
+                            "input": {
+                                "type": "string",
+                                "description": "The input or question for the skill"
+                            }
+                        },
+                        "required": ["input"]
+                    }),
+                )
+            })
+            .collect()
     }
 
     /// Load skills from configuration

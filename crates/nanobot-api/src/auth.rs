@@ -1,6 +1,5 @@
 //! API authentication
 
-use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// API Key authentication manager

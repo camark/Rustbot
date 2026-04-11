@@ -29,3 +29,6 @@ tracing-log = "0.2"
 dirs.workspace = true
 chrono.workspace = true
 cron = "0.12"
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.27", features = ["signal"] }

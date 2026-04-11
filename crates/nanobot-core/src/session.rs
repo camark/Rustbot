@@ -310,6 +310,7 @@ impl Clone for SessionManager {
 pub struct SessionHandle {
     session: Session,
     manager: SessionManager,
+    #[allow(dead_code)]
     key: String,
     dirty: bool,
 }

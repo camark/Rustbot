@@ -62,8 +62,8 @@ rustbot channels login telegram
 rustbot channels status
 
 # MCP (Model Context Protocol)
-# Note: MCP commands are pending CLI integration
-# Use MCP client programmatically via nanobot-core::mcp
+rustbot mcp list               # List configured MCP servers
+rustbot mcp status             # Show MCP server status
 ```
 
 ## Workspace Architecture
@@ -103,7 +103,8 @@ Channel (Telegram/Discord/API)
 
 **API Auth Middleware**: Bearer token validation via axum middleware. Multiple keys supported via `ApiAuth`.
 
-**MCP Client**: `nanobot-core/src/mcp/` - Model Context Protocol implementation with stdio/SSE transports (Phase 6.1).
+**MCP Client**: `nanobot-core/src/mcp/` - Model Context Protocol implementation with stdio/SSE transports.
+Fully integrated with AgentLoop - MCP tools automatically registered and available to LLM.
 
 **Subagent System**: `nanobot-core/src/subagent.rs` - Task delegation to specialized agents (Code, Review, Planning, Research, Custom) (Phase 6.2).
 
@@ -130,9 +131,40 @@ Config file: `~/.nanobot/config.json`
   },
   "channels": {
     "telegram": { "bot_token": "..." }
+  },
+  "tools": {
+    "mcpServers": {
+      "filesystem": {
+        "transportType": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "~"]
+      },
+      "sqlite": {
+        "transportType": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-sqlite", "/path/to/db.sqlite"]
+      },
+      "sse-example": {
+        "transportType": "sse",
+        "url": "http://localhost:3000/sse"
+      }
+    }
   }
 }
 ```
+
+**MCP Configuration Fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `transportType` | string | "stdio" | Transport type: "stdio" or "sse" |
+| `command` | string | - | Command to spawn (stdio only) |
+| `args` | array | [] | Command arguments (stdio only) |
+| `env` | object | {} | Environment variables (stdio only) |
+| `url` | string | - | SSE endpoint URL (sse only) |
+| `headers` | object | {} | HTTP headers (sse only) |
+| `toolTimeout` | number | 30 | Tool call timeout in seconds |
+| `enabledTools` | array | ["*"] | Tools to enable (wildcard supported) |
 
 Auth tokens stored separately in `~/.nanobot/auth.json` (0600 permissions).
 
@@ -183,8 +215,8 @@ Auth tokens stored separately in `~/.nanobot/auth.json` (0600 permissions).
 
 - Cron jobs in-memory only (no persistence to disk)
 - API streaming uses simplified SSE format (full AgentLoop integration pending)
-- MCP client CLI commands pending integration
 - Subagent execution is placeholder (needs AgentLoop spawn implementation)
 - Skills are loaded at runtime (no hot-reload support yet)
 - Heartbeat not integrated with session cleanup
 - API streaming simplified (AgentLoop integration pending)
+- MCP tools require manual server setup (e.g., via npx)

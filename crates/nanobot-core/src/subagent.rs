@@ -29,11 +29,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 
 use crate::session::Session;
 
@@ -387,6 +387,7 @@ impl Default for SubagentRegistry {
 /// Subagent manager for handling delegation
 pub struct SubagentManager {
     registry: Arc<SubagentRegistry>,
+    #[allow(dead_code)]
     session: Arc<RwLock<Session>>,
 }
 

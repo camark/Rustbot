@@ -613,6 +613,46 @@ fn default_api_timeout() -> f64 {
 }
 
 // ============================================================================
+// Skills Configuration
+// ============================================================================
+
+/// Skills configuration
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillsConfig {
+    /// Whether skills are enabled
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Skills directory path (default: ~/.nanobot/skills)
+    #[serde(default = "default_skills_dir")]
+    pub skills_dir: String,
+
+    /// List of enabled skill IDs (empty means all)
+    #[serde(default)]
+    pub enabled_skills: Vec<String>,
+
+    /// List of disabled skill IDs
+    #[serde(default)]
+    pub disabled_skills: Vec<String>,
+}
+
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            skills_dir: default_skills_dir(),
+            enabled_skills: vec![],
+            disabled_skills: vec![],
+        }
+    }
+}
+
+fn default_skills_dir() -> String {
+    "~/.nanobot/skills".to_string()
+}
+
+// ============================================================================
 // Root Configuration
 // ============================================================================
 
@@ -637,6 +677,9 @@ pub struct Config {
 
     #[serde(default)]
     pub tools: ToolsConfig,
+
+    #[serde(default)]
+    pub skills: SkillsConfig,
 }
 
 impl Default for Config {
@@ -648,6 +691,7 @@ impl Default for Config {
             api: ApiConfig::default(),
             gateway: GatewayConfig::default(),
             tools: ToolsConfig::default(),
+            skills: SkillsConfig::default(),
         }
     }
 }

@@ -104,6 +104,12 @@ enum Commands {
         #[command(subcommand)]
         action: ServicesAction,
     },
+
+    /// MCP (Model Context Protocol) management
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -191,6 +197,15 @@ enum ServicesAction {
     },
 }
 
+#[derive(Subcommand)]
+enum McpAction {
+    /// List configured MCP servers and available tools
+    List,
+
+    /// Show MCP server status
+    Status,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -267,6 +282,16 @@ async fn main() -> anyhow::Result<()> {
                 }
                 ServicesAction::Stop { name } => {
                     commands::services::stop(name, cli.config.as_deref()).await?;
+                }
+            }
+        }
+        Some(Commands::Mcp { action }) => {
+            match action {
+                McpAction::List => {
+                    commands::mcp::list(cli.config.as_deref()).await?;
+                }
+                McpAction::Status => {
+                    commands::mcp::status(cli.config.as_deref()).await?;
                 }
             }
         }
