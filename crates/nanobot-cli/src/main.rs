@@ -40,11 +40,11 @@ enum Commands {
     /// Chat with the agent
     Agent {
         /// Message to send
-        #[arg(short, long)]
+        #[arg(short = 'm', long)]
         message: Option<String>,
 
         /// Model to use
-        #[arg(short, long)]
+        #[arg(short = 'M', long)]
         model: Option<String>,
 
         /// Show logs during chat

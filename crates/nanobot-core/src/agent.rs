@@ -208,6 +208,13 @@ impl AgentLoop {
         let mut session_handle = self.sessions.get_or_create(&session_key).await;
         info!("Dispatch: got session handle for {}", session_key);
 
+        // Save user message to session history first
+        let user_msg = serde_json::json!({
+            "role": "user",
+            "content": msg.content,
+        });
+        session_handle.add_message(user_msg);
+
         // Build messages for LLM
         let history = session_handle.get_history(0);
         let mut messages_value = self.context.build_messages(

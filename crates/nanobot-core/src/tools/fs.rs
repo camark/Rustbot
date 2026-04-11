@@ -2,12 +2,80 @@
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use std::env;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use tracing::{debug, info, warn};
 
 use crate::tools::{Tool, ToolError, ToolResult};
+
+/// Resolve a user directory path in a cross-platform way.
+/// Handles both Chinese and English directory names on Linux/Unix systems
+/// by reading XDG user directories configuration.
+fn resolve_user_dir(dir_name: &str) -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+
+    // Determine the XDG variable name based on directory name
+    let xdg_var = match dir_name {
+        "桌面" | "Desktop" => "XDG_DESKTOP_DIR",
+        "文档" | "Documents" => "XDG_DOCUMENTS_DIR",
+        "下载" | "Downloads" => "XDG_DOWNLOAD_DIR",
+        "模板" | "Templates" => "XDG_TEMPLATES_DIR",
+        "公共" | "Public" => "XDG_PUBLICSHARE_DIR",
+        "音乐" | "Music" => "XDG_MUSIC_DIR",
+        "图片" | "Pictures" => "XDG_PICTURES_DIR",
+        "视频" | "Videos" => "XDG_VIDEOS_DIR",
+        _ => return None,
+    };
+
+    // Try XDG environment variable first
+    if let Ok(xdg_path) = env::var(xdg_var) {
+        let xdg_path = PathBuf::from(xdg_path);
+        if xdg_path.exists() {
+            return Some(xdg_path);
+        }
+    }
+
+    // Fallback: read from ~/.config/user-dirs.dirs
+    let config_path = home.join(".config/user-dirs.dirs");
+    if config_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&config_path) {
+            let prefix = format!("{}=", xdg_var);
+            for line in content.lines() {
+                if let Some(value) = line.strip_prefix(&prefix) {
+                    // Parse "$HOME/xxx" or "/absolute/path"
+                    let path = value.trim_matches('"').trim();
+                    if let Some(relative) = path.strip_prefix("$HOME/") {
+                        return Some(home.join(relative));
+                    } else if let Some(absolute) = path.strip_prefix('$') {
+                        // Handle ${HOME} format
+                        if let Some(rel) = absolute.strip_prefix("{HOME}/") {
+                            return Some(home.join(rel));
+                        }
+                    } else if path.starts_with('/') {
+                        return Some(PathBuf::from(path));
+                    }
+                }
+            }
+        }
+    }
+
+    // Final fallback: use English names in home directory
+    let fallback = match dir_name {
+        "桌面" | "Desktop" => "Desktop",
+        "文档" | "Documents" => "Documents",
+        "下载" | "Downloads" => "Downloads",
+        "模板" | "Templates" => "Templates",
+        "公共" | "Public" => "Public",
+        "音乐" | "Music" => "Music",
+        "图片" | "Pictures" => "Pictures",
+        "视频" | "Videos" => "Videos",
+        _ => return None,
+    };
+
+    Some(home.join(fallback))
+}
 
 // ============================================================================
 // Read File Tool
@@ -28,28 +96,24 @@ impl ReadFileTool {
     }
 
     fn resolve_path(&self, path: &str) -> ToolResult<PathBuf> {
-        use std::path::Component;
-
-        // First, handle special Chinese path names
-        let path_str = match path {
-            "桌面" | "桌面/" => "~/Desktop",
-            "文档" | "文档/" => "~/Documents",
-            "下载" | "下载/" => "~/Downloads",
-            _ => path,
-        };
-
         // Expand ~ to home directory
-        let path = if path_str.starts_with("~/") {
+        let path = if path.starts_with("~/") {
             let home = dirs::home_dir()
                 .ok_or_else(|| ToolError::Execution("Home directory not found".to_string()))?;
-            // Remove ~/ prefix and join with home directory
-            let rel_path = path_str[2..].trim_start_matches('/'); // Remove ~/ and any leading /
-            home.join(rel_path)
-        } else if path_str == "~" {
+            // Check if it's a known user directory (Desktop, Documents, etc.)
+            let dir_name = &path[2..]; // Remove ~/ prefix
+            let resolved = if let Some(user_dir) = resolve_user_dir(dir_name) {
+                user_dir
+            } else {
+                // Not a known user directory, just join with home
+                home.join(dir_name)
+            };
+            resolved
+        } else if path == "~" {
             dirs::home_dir()
                 .ok_or_else(|| ToolError::Execution("Home directory not found".to_string()))?
         } else {
-            PathBuf::from(path_str)
+            PathBuf::from(path)
         };
 
         // Make absolute if relative
@@ -159,25 +223,24 @@ impl WriteFileTool {
     }
 
     fn resolve_path(&self, path: &str) -> ToolResult<PathBuf> {
-        // First, handle special Chinese path names
-        let path_str = match path {
-            "桌面" | "桌面/" => "~/Desktop",
-            "文档" | "文档/" => "~/Documents",
-            "下载" | "下载/" => "~/Downloads",
-            _ => path,
-        };
-
         // Expand ~ to home directory
-        let path = if path_str.starts_with("~/") {
+        let path = if path.starts_with("~/") {
             let home = dirs::home_dir()
                 .ok_or_else(|| ToolError::Execution("Home directory not found".to_string()))?;
-            let rel_path = path_str[2..].trim_start_matches('/');
-            home.join(rel_path)
-        } else if path_str == "~" {
+            // Check if it's a known user directory (Desktop, Documents, etc.)
+            let dir_name = &path[2..]; // Remove ~/ prefix
+            let resolved = if let Some(user_dir) = resolve_user_dir(dir_name) {
+                user_dir
+            } else {
+                // Not a known user directory, just join with home
+                home.join(dir_name)
+            };
+            resolved
+        } else if path == "~" {
             dirs::home_dir()
                 .ok_or_else(|| ToolError::Execution("Home directory not found".to_string()))?
         } else {
-            PathBuf::from(path_str)
+            PathBuf::from(path)
         };
 
         // Make absolute if relative
@@ -279,11 +342,15 @@ impl EditFileTool {
     }
 
     fn resolve_path(&self, path: &str) -> ToolResult<PathBuf> {
-        // First, handle special Chinese path names
+        // First, handle special Chinese path names (Linux/Unix)
         let path_str = match path {
-            "桌面" | "桌面/" => "~/Desktop",
-            "文档" | "文档/" => "~/Documents",
-            "下载" | "下载/" => "~/Downloads",
+            "桌面" | "桌面/" => "~/桌面",
+            "文档" | "文档/" => "~/文档",
+            "下载" | "下载/" => "~/下载",
+            // Windows English equivalents
+            "Desktop" | "Desktop/" => "~/Desktop",
+            "Documents" | "Documents/" => "~/Documents",
+            "Downloads" | "Downloads/" => "~/Downloads",
             _ => path,
         };
 
@@ -457,26 +524,24 @@ impl ListDirTool {
     }
 
     fn resolve_path(&self, path: &str) -> ToolResult<PathBuf> {
-        // First, handle special Chinese path names
-        let path_str = match path {
-            "桌面" | "桌面/" => "~/Desktop",
-            "文档" | "文档/" => "~/Documents",
-            "下载" | "下载/" => "~/Downloads",
-            _ => path,
-        };
-
         // Expand ~ to home directory
-        let path = if path_str.starts_with("~/") {
+        let path = if path.starts_with("~/") {
             let home = dirs::home_dir()
                 .ok_or_else(|| ToolError::Execution("Home directory not found".to_string()))?;
-            // Remove ~/ prefix and join with home directory
-            let rel_path = path_str[2..].trim_start_matches('/'); // Remove ~/ and any leading /
-            home.join(rel_path)
-        } else if path_str == "~" {
+            // Check if it's a known user directory (Desktop, Documents, etc.)
+            let dir_name = &path[2..]; // Remove ~/ prefix
+            let resolved = if let Some(user_dir) = resolve_user_dir(dir_name) {
+                user_dir
+            } else {
+                // Not a known user directory, just join with home
+                home.join(dir_name)
+            };
+            resolved
+        } else if path == "~" {
             dirs::home_dir()
                 .ok_or_else(|| ToolError::Execution("Home directory not found".to_string()))?
         } else {
-            PathBuf::from(path_str)
+            PathBuf::from(path)
         };
 
         // Make absolute if relative
