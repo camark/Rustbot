@@ -182,6 +182,9 @@ async fn run_interactive(agent_loop: &AgentLoop, logs: bool) -> Result<()> {
             break;
         }
 
+        // Move to next line after user input
+        println!();
+
         let input = input.trim();
 
         if input.is_empty() {
