@@ -129,13 +129,13 @@ async fn run_single_message(agent_loop: &AgentLoop, message: &str) -> Result<()>
         bus.consume_outbound()
     ).await {
         Ok(Ok(outbound)) => {
-            println!("\n{}", outbound.content);
+            println!("{}", outbound.content);
         }
         Ok(Err(_)) => {
-            println!("\nError: No response from agent");
+            println!("Error: No response from agent");
         }
         Err(_) => {
-            println!("\nError: Request timeout");
+            println!("Error: Request timeout");
         }
     }
 
@@ -209,7 +209,7 @@ async fn run_interactive(agent_loop: &AgentLoop, logs: bool) -> Result<()> {
             agent_loop.bus().consume_outbound()
         ).await {
             Ok(Ok(outbound)) => {
-                println!("\n{}", outbound.content);
+                println!("{}", outbound.content);
             }
             Ok(Err(_)) => {
                 println!("Error: No response from agent");
