@@ -220,7 +220,9 @@ async fn run_interactive(agent_loop: &AgentLoop, logs: bool) -> Result<()> {
             Ok(Ok(outbound)) => {
                 // Normalize line endings for cross-platform consistency
                 let content = outbound.content.replace("\r\n", "\n").replace('\r', "\n");
-                println!("\n{}", content);
+                println!("{}", content);
+                // Small delay to let background logs complete before showing next prompt
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
             }
             Ok(Err(_)) => {
                 println!("Error: No response from agent");

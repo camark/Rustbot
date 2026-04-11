@@ -318,7 +318,6 @@ impl AgentLoop {
             } else {
                 // No tool calls, just send the response
                 self.handle_response(&msg, &mut session_handle, current_response).await?;
-                info!("Dispatch: completed for chat_id={}", msg.chat_id);
                 break;
             }
         }
